@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: crypto_pump_detector_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=crypto_pump_detector
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: crypto_pump_detector_app
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017
+      - MONGODB_DB_NAME=crypto_pump_detector
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+    env_file:
+      - .env
+
+volumes:
+  mongodb_data:
