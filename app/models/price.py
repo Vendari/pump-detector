@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -37,16 +38,18 @@ class TickerOwnership(BaseModel):
 
 class PriceAlert(BaseModel):
     """Represents a price spike or drop alert."""
-    
+
     symbol: str
     exchange: str
     alert_type: str = Field(..., description="'spike' or 'drop'")
     start_price: float
     current_price: float
     change_percent: float
-    window_minutes: int
+    interval: str = Field(..., description="Detection interval (e.g., 10m, 1h)")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    
+    webhook_url: Optional[str] = Field(None, description="Webhook URL to send alert to")
+    alert_id: Optional[str] = Field(None, description="Alert config ID")
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -56,7 +59,7 @@ class PriceAlert(BaseModel):
                 "start_price": 45000.00,
                 "current_price": 47500.00,
                 "change_percent": 5.56,
-                "window_minutes": 5,
-                "timestamp": "2026-01-27T12:05:00Z"
+                "interval": "10m",
+                "timestamp": "2026-01-27T12:05:00Z",
             }
         }

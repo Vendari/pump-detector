@@ -228,7 +228,7 @@ Expected response:
 }
 ```
 
-3. Monitor ticker ownership:
+3. Monitor stats:
 ```bash
 curl http://localhost:8000/stats
 ```

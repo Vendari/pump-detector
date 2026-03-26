@@ -1,5 +1,12 @@
+"""
+Webhook service - sends spike/drop alerts to configured URLs.
+
+Supports per-alert webhook URLs (from custom alert configs).
+"""
+
 import logging
 from typing import Optional
+
 import aiohttp
 
 from app.config import settings
@@ -10,52 +17,39 @@ logger = logging.getLogger(__name__)
 
 class WebhookService:
     """
-    Service for sending webhook notifications when price alerts are detected.
-    
-    This service:
-    - Sends HTTP POST requests to configured webhook URL
-    - Handles timeouts and errors gracefully
-    - Provides retry logic (optional)
+    Sends HTTP POST requests to webhook URLs when alerts trigger.
+
+    Uses webhook_url from each PriceAlert (custom alerts).
     """
-    
-    def __init__(self):
+
+    def __init__(self, timeout: int = 10):
         """Initialize webhook service."""
-        self.webhook_url = settings.webhook_url
-        self.timeout = settings.webhook_timeout_seconds
+        self.timeout = timeout
         self._session: Optional[aiohttp.ClientSession] = None
-        
-        if self.webhook_url:
-            logger.info(f"Webhook service initialized: {self.webhook_url}")
-        else:
-            logger.warning("Webhook URL not configured, alerts will be logged only")
-    
+
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session."""
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
         return self._session
-    
+
     async def close(self) -> None:
         """Close the aiohttp session."""
         if self._session and not self._session.closed:
             await self._session.close()
-    
+
     async def send_alert(self, alert: PriceAlert) -> bool:
         """
-        Send a price alert to the configured webhook URL.
-        
-        Args:
-            alert: Price alert to send
-            
-        Returns:
-            bool: True if webhook sent successfully, False otherwise
+        Send a price alert to the alert's webhook_url.
+
+        Returns True if sent successfully.
         """
-        if not self.webhook_url:
-            logger.debug("Webhook URL not configured, skipping")
+        webhook_url = alert.webhook_url
+        if not webhook_url:
+            logger.debug("No webhook URL in alert, skipping")
             return False
-        
+
         try:
-            # Prepare payload
             payload = {
                 "symbol": alert.symbol,
                 "exchange": alert.exchange,
@@ -63,46 +57,37 @@ class WebhookService:
                 "start_price": alert.start_price,
                 "current_price": alert.current_price,
                 "change_percent": round(alert.change_percent, 2),
-                "window_minutes": alert.window_minutes,
+                "interval": alert.interval,
                 "timestamp": alert.timestamp.isoformat(),
+                "alert_id": alert.alert_id,
             }
-            
-            # Send webhook
+
             session = await self._get_session()
             timeout = aiohttp.ClientTimeout(total=self.timeout)
-            
+
             async with session.post(
-                self.webhook_url,
+                webhook_url,
                 json=payload,
-                timeout=timeout
+                timeout=timeout,
             ) as response:
                 if response.status == 200:
-                    logger.info(f"Webhook sent successfully for {alert.symbol}")
+                    logger.info(f"Webhook sent to {webhook_url} for {alert.symbol}")
                     return True
                 else:
                     logger.warning(
-                        f"Webhook returned status {response.status} for {alert.symbol}"
+                        f"Webhook returned {response.status} for {alert.symbol}"
                     )
                     return False
-                    
+
         except aiohttp.ClientError as e:
             logger.error(f"HTTP error sending webhook: {e}")
             return False
         except Exception as e:
             logger.error(f"Unexpected error sending webhook: {e}")
             return False
-    
-    async def test_webhook(self) -> bool:
-        """
-        Test the webhook endpoint with a sample alert.
-        
-        Returns:
-            bool: True if webhook endpoint is reachable
-        """
-        if not self.webhook_url:
-            logger.error("Webhook URL not configured")
-            return False
-        
+
+    async def test_webhook(self, url: str) -> bool:
+        """Test a webhook URL with a sample alert."""
         test_alert = PriceAlert(
             symbol="TESTUSDT",
             exchange="test_exchange",
@@ -110,11 +95,11 @@ class WebhookService:
             start_price=100.0,
             current_price=105.0,
             change_percent=5.0,
-            window_minutes=5
+            interval="1m",
+            webhook_url=url,
         )
-        
         return await self.send_alert(test_alert)
 
 
 # Global instance
-webhook_service = WebhookService()
+webhook_service = WebhookService(timeout=settings.webhook_timeout_seconds)

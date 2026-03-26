@@ -16,6 +16,19 @@ import uvicorn
 app = FastAPI(title="Webhook Receiver Example")
 
 
+def format_price(price: float) -> str:
+    """Format price with appropriate precision for crypto (handles small values)."""
+    if price is None or price == 0:
+        return "0"
+    if price < 0.0001:
+        return f"{price:.8f}"
+    if price < 1:
+        return f"{price:.6f}"
+    if price < 1000:
+        return f"{price:.4f}"
+    return f"{price:,.2f}"
+
+
 @app.post("/alert")
 async def receive_alert(request: Request):
     """
@@ -36,10 +49,10 @@ async def receive_alert(request: Request):
     print(f"Symbol:       {alert.get('symbol')}")
     print(f"Exchange:     {alert.get('exchange')}")
     print(f"Type:         {alert.get('alert_type').upper()}")
-    print(f"Start Price:  ${alert.get('start_price'):,.2f}")
-    print(f"Current:      ${alert.get('current_price'):,.2f}")
-    print(f"Change:       {alert.get('change_percent'):+.2f}%")
-    print(f"Window:       {alert.get('window_minutes')} minutes")
+    print(f"Start Price:  ${format_price(alert.get('start_price'))}")
+    print(f"Current:      ${format_price(alert.get('current_price'))}")
+    print(f"Change:       {alert.get('change_percent', 0):+.2f}%")
+    print(f"Interval:     {alert.get('interval', alert.get('window_minutes', 'N/A'))}")
     print(f"Timestamp:    {alert.get('timestamp')}")
     print("=" * 70 + "\n")
     
