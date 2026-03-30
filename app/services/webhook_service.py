@@ -64,10 +64,14 @@ class WebhookService:
 
             session = await self._get_session()
             timeout = aiohttp.ClientTimeout(total=self.timeout)
+            headers: dict[str, str] = {}
+            if settings.webhook_api_key:
+                headers["x-api-key"] = settings.webhook_api_key
 
             async with session.post(
                 webhook_url,
                 json=payload,
+                headers=headers or None,
                 timeout=timeout,
             ) as response:
                 if response.status == 200:

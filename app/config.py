@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     # Webhook for 10% tier alerts (5% tier = DB only)
     webhook_url: Optional[str] = None
+    webhook_api_key: Optional[str] = None
 
     # Application
     log_level: str = "INFO"
