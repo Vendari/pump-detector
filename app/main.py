@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.database.mongodb import mongodb_service
 from app.exchanges.binance_futures import BinanceFuturesExchange
+from app.exchanges.gate_futures import GateFuturesExchange
 from app.models.alert import SpikeAlertConfig
 from app.models.candle import CandleInterval, parse_interval
 from app.services.price_broadcaster import price_broadcaster
@@ -44,6 +45,8 @@ async def lifespan(app: FastAPI):
 
         binance_futures = BinanceFuturesExchange()
         price_monitor.add_exchange(binance_futures)
+        gate_futures = GateFuturesExchange()
+        price_monitor.add_exchange(gate_futures)
 
         monitor_task = asyncio.create_task(price_monitor.start())
 
@@ -112,6 +115,7 @@ async def websocket_live_price(websocket: WebSocket):
     WebSocket for live price updates.
 
     Send JSON: {"action": "subscribe", "symbol": "BTCUSDT", "exchange": "binance_futures"}
+    or {"action": "subscribe", "symbol": "BTCUSDT", "exchange": "gate_futures"}
     Send JSON: {"action": "unsubscribe"}
     """
     await websocket.accept()
@@ -301,7 +305,7 @@ async def test_webhook(url: str):
 async def list_exchanges():
     """List exchanges with data."""
     exchanges = await mongodb_service.get_available_exchanges()
-    return {"exchanges": exchanges or ["binance_futures"]}
+    return {"exchanges": exchanges or ["binance_futures", "gate_futures"]}
 
 
 @app.get("/symbols/{exchange}")

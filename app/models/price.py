@@ -13,6 +13,11 @@ class PriceUpdate(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="Update timestamp")
     mark_price: Optional[float] = Field(None, description="Mark price (for futures)")
     index_price: Optional[float] = Field(None, description="Index price (for futures)")
+    quote_volume_24h: Optional[float] = Field(
+        None,
+        description="Rolling 24h quote volume total from exchange (e.g. USDT); "
+        "used to infer per-tick volume deltas for candles when present",
+    )
     
     class Config:
         json_schema_extra = {

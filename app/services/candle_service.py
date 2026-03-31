@@ -34,9 +34,10 @@ class PriceBucket:
     low: float = float("inf")
     close: float = 0.0
     count: int = 0
+    volume: float = 0.0
 
-    def add_price(self, price: float) -> None:
-        """Add a price to the bucket."""
+    def add_price(self, price: float, volume_delta: float = 0.0) -> None:
+        """Add a price to the bucket; volume_delta is quote volume since last update (if known)."""
         if self.count == 0:
             self.open = self.high = self.low = self.close = price
         else:
@@ -44,6 +45,8 @@ class PriceBucket:
             self.low = min(self.low, price)
             self.close = price
         self.count += 1
+        if volume_delta > 0:
+            self.volume += volume_delta
 
     def to_candle(
         self, symbol: str, exchange: str, interval: str, timestamp: datetime
@@ -58,6 +61,7 @@ class PriceBucket:
             low=self.low,
             close=self.close,
             timestamp=timestamp,
+            volume=self.volume,
         )
 
 
@@ -90,6 +94,8 @@ class CandleService:
             tuple[str, str, CandleInterval], Dict[datetime, List[Candle]]
         ] = defaultdict(dict)
         self._lock_buckets: Dict[tuple[str, str], datetime] = {}
+        # Last seen cumulative 24h quote volume per (symbol, exchange) — delta → candle volume
+        self._last_quote_volume_24h: Dict[tuple[str, str], float] = {}
 
     async def add_price_update(self, update: PriceUpdate) -> List[Candle]:
         """
@@ -101,6 +107,14 @@ class CandleService:
         exchange = update.exchange
         key = (symbol, exchange)
 
+        volume_delta = 0.0
+        if update.quote_volume_24h is not None:
+            cum = float(update.quote_volume_24h)
+            last = self._last_quote_volume_24h.get(key)
+            if last is not None and cum >= last:
+                volume_delta = cum - last
+            self._last_quote_volume_24h[key] = cum
+
         # Current bucket for 10s
         bucket_ts = truncate_to_interval(update.timestamp, CandleInterval.S10)
         if key not in self._price_buckets:
@@ -109,7 +123,7 @@ class CandleService:
         buckets = self._price_buckets[key]
         if bucket_ts not in buckets:
             buckets[bucket_ts] = PriceBucket()
-        buckets[bucket_ts].add_price(update.price)
+        buckets[bucket_ts].add_price(update.price, volume_delta)
 
         # Check if we've moved to a new 10s bucket - finalize previous
         completed: List[Candle] = []

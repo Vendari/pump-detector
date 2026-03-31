@@ -8,7 +8,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncI
 from pymongo import IndexModel, ASCENDING, DESCENDING
 
 from app.config import settings
-from app.models.candle import Candle
+from app.models.candle import Candle, INTERVAL_ORDER, MAX_CANDLES_PER_INTERVAL
 from app.models.alert import SpikeAlertConfig
 from app.models.price import PriceAlert
 
@@ -213,6 +213,44 @@ class MongoDBService:
             logger.error(f"Error getting candles: {e}")
             return []
 
+    async def get_candles_snapshot_by_symbol_exchange(
+        self,
+        symbol: str,
+        exchange: str,
+        max_per_interval: int = MAX_CANDLES_PER_INTERVAL,
+    ) -> dict[str, list[dict]]:
+        """
+        Full snapshot of all candles we currently store for this symbol/exchange,
+        keyed by interval (each list is oldest-first, capped at max_per_interval).
+
+        Used when persisting detected alerts for downstream ML / LLM training.
+        """
+        try:
+            intervals = await self.candles_collection.distinct(
+                "interval",
+                {"symbol": symbol, "exchange": exchange},
+            )
+            if not intervals:
+                return {}
+
+            order_map = {iv.value: idx for idx, iv in enumerate(INTERVAL_ORDER)}
+
+            def _interval_sort_key(iv: str) -> tuple[int, str]:
+                return (order_map.get(iv, len(INTERVAL_ORDER)), iv)
+
+            out: dict[str, list[dict]] = {}
+            for interval in sorted(intervals, key=_interval_sort_key):
+                rows = await self.get_candles(
+                    symbol, exchange, interval, limit=max_per_interval
+                )
+                out[interval] = [
+                    {k: v for k, v in row.items() if k != "_id"} for row in rows
+                ]
+            return out
+        except Exception as e:
+            logger.error(f"Error building candles snapshot: {e}")
+            return {}
+
     async def get_latest_price(self, symbol: str, exchange: str) -> Optional[dict]:
         """
         Get the latest price (close of most recent 10s candle or any candle).
@@ -296,8 +334,13 @@ class MongoDBService:
     # --- Detected Alerts (history of all triggered alerts) ---
 
     async def store_detected_alert(self, alert: PriceAlert) -> bool:
-        """Store a detected alert to database for history."""
+        """Store a detected alert to database for history (includes full candle snapshot)."""
         try:
+            candles = await self.get_candles_snapshot_by_symbol_exchange(
+                alert.symbol,
+                alert.exchange,
+                max_per_interval=MAX_CANDLES_PER_INTERVAL,
+            )
             document = {
                 "symbol": alert.symbol,
                 "exchange": alert.exchange,
@@ -309,6 +352,7 @@ class MongoDBService:
                 "timestamp": alert.timestamp,
                 "webhook_url": alert.webhook_url,
                 "alert_id": alert.alert_id,
+                "candles": candles,
             }
             await self.detected_alerts_collection.insert_one(document)
             return True
