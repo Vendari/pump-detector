@@ -120,15 +120,79 @@ class GateFuturesExchange(BaseExchange):
             except Exception as e:
                 logger.warning("Gate futures contract refresh failed: %s", e)
 
+    async def _pump_raw_messages(
+        self, out: asyncio.Queue[str | None]
+    ) -> None:
+        """Read WebSocket frames as fast as possible; parsing happens in subscribe_all_tickers."""
+        if not self._websocket:
+            await out.put(None)
+            return
+        try:
+            async for raw in self._websocket:
+                if not self._is_running:
+                    break
+                await out.put(raw)
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning("Gate futures WebSocket closed")
+            self._is_running = False
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Gate futures read loop error: %s", e)
+            self._is_running = False
+        finally:
+            await out.put(None)
+
+    def _raw_message_to_updates(self, raw: str) -> list[PriceUpdate]:
+        """Turn one WS text frame into ticker updates (may be empty)."""
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.debug("Gate futures JSON error: %s", e)
+            return []
+
+        err = data.get("error")
+        if err:
+            logger.warning("Gate futures channel error: %s", err)
+            return []
+
+        channel = data.get("channel")
+        event = data.get("event")
+        if channel != "futures.tickers" or event != "update":
+            return []
+
+        result = data.get("result")
+        if not isinstance(result, list):
+            return []
+
+        time_ms = data.get("time_ms")
+        ts_base = (
+            datetime.utcfromtimestamp(time_ms / 1000.0)
+            if isinstance(time_ms, int)
+            else datetime.utcnow()
+        )
+
+        out: list[PriceUpdate] = []
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            update = self._parse_ticker(item, ts_base)
+            if update:
+                out.append(update)
+        return out
+
     async def connect(self) -> None:
         try:
             extra_headers = [("X-Gate-Size-Decimal", "1")]
             logger.info("Connecting to Gate futures: %s", GATE_FUTURES_WS_USDT)
+            # High contract count → bursty traffic; slow downstream work must not stall reads
+            # or keepalive ping/pong can time out. Longer ping_timeout is a backup; the queue
+            # pump below is the main fix.
             self._websocket = await websockets.connect(
                 GATE_FUTURES_WS_USDT,
                 extra_headers=extra_headers,
-                ping_interval=20,
-                ping_timeout=10,
+                ping_interval=30,
+                ping_timeout=120,
                 close_timeout=10,
             )
             self._is_running = True
@@ -182,51 +246,24 @@ class GateFuturesExchange(BaseExchange):
 
         self._refresh_task = asyncio.create_task(self._subscription_refresh_loop())
 
+        raw_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        pump_task = asyncio.create_task(self._pump_raw_messages(raw_queue))
+
         try:
-            async for raw in self._websocket:
+            while True:
+                raw = await raw_queue.get()
+                if raw is None:
+                    break
                 if not self._is_running:
                     break
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError as e:
-                    logger.debug("Gate futures JSON error: %s", e)
-                    continue
-
-                err = data.get("error")
-                if err:
-                    logger.warning(
-                        "Gate futures channel error: %s",
-                        err,
-                    )
-                    continue
-
-                channel = data.get("channel")
-                event = data.get("event")
-                if channel != "futures.tickers" or event != "update":
-                    continue
-
-                result = data.get("result")
-                if not isinstance(result, list):
-                    continue
-
-                time_ms = data.get("time_ms")
-                ts_base = (
-                    datetime.utcfromtimestamp(time_ms / 1000.0)
-                    if isinstance(time_ms, int)
-                    else datetime.utcnow()
-                )
-
-                for item in result:
-                    if not isinstance(item, dict):
-                        continue
-                    update = self._parse_ticker(item, ts_base)
-                    if update:
-                        yield update
-
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Gate futures WebSocket closed")
-            self._is_running = False
+                for update in self._raw_message_to_updates(raw):
+                    yield update
         finally:
+            pump_task.cancel()
+            try:
+                await pump_task
+            except asyncio.CancelledError:
+                pass
             if self._refresh_task:
                 self._refresh_task.cancel()
                 try:
