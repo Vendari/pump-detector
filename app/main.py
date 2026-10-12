@@ -12,13 +12,21 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import hmac
+
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.database.mongodb import mongodb_service
 from app.exchanges.binance_futures import BinanceFuturesExchange
 from app.exchanges.gate_futures import GateFuturesExchange
+from app.exchanges.on_demand import (
+    AsterFuturesExchange,
+    BybitFuturesExchange,
+    HyperliquidExchange,
+    KucoinFuturesExchange,
+)
 from app.models.alert import SpikeAlertConfig
 from app.models.candle import CandleInterval, parse_interval
 from app.services.price_broadcaster import price_broadcaster
@@ -47,6 +55,14 @@ async def lifespan(app: FastAPI):
         price_monitor.add_exchange(binance_futures)
         gate_futures = GateFuturesExchange()
         price_monitor.add_exchange(gate_futures)
+        # Live prices only, connected while someone watches a symbol.
+        for on_demand in (
+            BybitFuturesExchange(),
+            KucoinFuturesExchange(),
+            AsterFuturesExchange(),
+            HyperliquidExchange(),
+        ):
+            price_monitor.add_exchange(on_demand)
 
         monitor_task = asyncio.create_task(price_monitor.start())
 
@@ -75,6 +91,24 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+
+# --- Auth ---
+
+OPEN_PATHS = {"/health"}
+
+
+def _key_ok(given: str | None) -> bool:
+    if not settings.api_key:
+        return True
+    return given is not None and hmac.compare_digest(given, settings.api_key)
+
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    if request.url.path not in OPEN_PATHS and not _key_ok(request.headers.get("x-api-key")):
+        return JSONResponse(status_code=401, content={"detail": "invalid api key"})
+    return await call_next(request)
 
 
 # --- Health & Info ---
@@ -112,77 +146,82 @@ async def get_stats():
 @app.websocket("/ws/price")
 async def websocket_live_price(websocket: WebSocket):
     """
-    WebSocket for live price updates.
+    WebSocket for live prices. Auth: `x-api-key` header or `?key=`.
 
-    Send JSON: {"action": "subscribe", "symbol": "BTCUSDT", "exchange": "binance_futures"}
-    or {"action": "subscribe", "symbol": "BTCUSDT", "exchange": "gate_futures"}
-    Send JSON: {"action": "unsubscribe"}
+    Send {"action": "subscribe", "symbol": "BTCUSDT", "exchange": "binance_futures"}
+    to add a market (several per connection; the latest known price is sent
+    at once). Send {"action": "unsubscribe", "symbol": ..., "exchange": ...}
+    to drop one, or {"action": "unsubscribe"} to drop all.
+    Exchanges: binance_futures, gate_futures (every market), bybit_futures,
+    kucoin_futures, aster_futures, hyperliquid (connected on demand).
+    Prices arrive as {"symbol", "exchange", "price", "timestamp"}.
     """
+    if not _key_ok(websocket.headers.get("x-api-key") or websocket.query_params.get("key")):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
-    queue: asyncio.Queue | None = None
-    symbol: str | None = None
-    exchange = "binance_futures"
-    inbound: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+    subscriptions: set[tuple[str, str]] = set()
 
-    async def receive_loop():
+    def drop(key: tuple[str, str]) -> None:
+        price_broadcaster.unsubscribe(key[0], key[1], queue)
+        price_monitor.unwatch(key[0], key[1])
+        subscriptions.discard(key)
+
+    def reply(payload: dict) -> None:
+        # Everything goes out through the one sender task.
         try:
-            while True:
-                data = await websocket.receive_text()
-                inbound.put_nowait(data)
-        except (WebSocketDisconnect, Exception):
-            inbound.put_nowait(None)  # Signal disconnect
+            queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            pass
 
-    recv_task = asyncio.create_task(receive_loop())
+    async def handle(raw: str) -> None:
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            reply({"error": "invalid json"})
+            return
+        action = msg.get("action")
+        sym = str(msg.get("symbol") or "").upper()
+        ex = msg.get("exchange") or "binance_futures"
+        if action == "subscribe":
+            if not sym:
+                reply({"error": "symbol required"})
+                return
+            key = (sym, ex)
+            if key not in subscriptions:
+                if not price_monitor.watch(sym, ex):
+                    reply({"error": "unknown exchange", "exchange": ex})
+                    return
+                price_broadcaster.subscribe(sym, ex, queue)
+                subscriptions.add(key)
+            reply({"status": "subscribed", "symbol": sym, "exchange": ex})
+            latest = price_broadcaster.get_latest(sym, ex)
+            if latest:
+                reply(latest)
+        elif action == "unsubscribe":
+            targets = [(sym, ex)] if sym else list(subscriptions)
+            for key in targets:
+                if key in subscriptions:
+                    drop(key)
+            reply({"status": "unsubscribed"})
 
+    async def forward_prices() -> None:
+        while True:
+            await websocket.send_json(await queue.get())
+
+    sender = asyncio.create_task(forward_prices())
     try:
         while True:
-            # Wait for price update (if subscribed) or inbound message
-            wait_tasks = [asyncio.create_task(inbound.get())]
-            if queue:
-                wait_tasks.append(asyncio.create_task(asyncio.wait_for(queue.get(), timeout=0.2)))
-
-            done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
-            for t in pending:
-                t.cancel()
-
-            for t in done:
-                try:
-                    result = t.result()
-                    if result is None:
-                        return
-                    if isinstance(result, dict):
-                        await websocket.send_json(result)
-                    else:
-                        msg = json.loads(result)
-                        action = msg.get("action")
-                        if action == "subscribe":
-                            sym = msg.get("symbol", "").upper()
-                            ex = msg.get("exchange", "binance_futures")
-                            if not sym:
-                                await websocket.send_json({"error": "symbol required"})
-                                continue
-                            if queue and symbol and exchange:
-                                price_broadcaster.unsubscribe(symbol, exchange, queue)
-                            symbol, exchange = sym, ex
-                            queue = price_broadcaster.subscribe(symbol, exchange)
-                            await websocket.send_json({"status": "subscribed", "symbol": symbol, "exchange": exchange})
-                        elif action == "unsubscribe":
-                            if queue and symbol and exchange:
-                                price_broadcaster.unsubscribe(symbol, exchange, queue)
-                                queue = None
-                            await websocket.send_json({"status": "unsubscribed"})
-                except (json.JSONDecodeError, asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
+            await handle(await websocket.receive_text())
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        logger.debug(f"/ws/price client error: {e}")
     finally:
-        recv_task.cancel()
-        try:
-            await recv_task
-        except asyncio.CancelledError:
-            pass
-        if queue and symbol and exchange:
-            price_broadcaster.unsubscribe(symbol, exchange, queue)
+        sender.cancel()
+        for key in list(subscriptions):
+            drop(key)
 
 
 # --- REST: Candles ---
@@ -305,7 +344,7 @@ async def test_webhook(url: str):
 async def list_exchanges():
     """List exchanges with data."""
     exchanges = await mongodb_service.get_available_exchanges()
-    return {"exchanges": exchanges or ["binance_futures", "gate_futures"]}
+    return {"exchanges": exchanges or [e.exchange_name for e in price_monitor.exchanges]}
 
 
 @app.get("/symbols/{exchange}")

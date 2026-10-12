@@ -31,11 +31,21 @@ API docs: http://localhost:8000/docs
 ### Live Price (WebSocket)
 
 ```
-ws://localhost:8000/ws/price
+wss://<host>/ws/price   (x-api-key header or ?key=)
 ```
 
-Send: `{"action": "subscribe", "symbol": "BTCUSDT", "exchange": "binance_futures"}`
-Receive: `{"symbol": "BTCUSDT", "exchange": "binance_futures", "price": 45000.5, "timestamp": "..."}`
+Send `{"action": "subscribe", "symbol": "BTCUSDT", "exchange": "bybit_futures"}` once per market (several per connection; the latest known price comes back at once). `{"action": "unsubscribe", "symbol": ..., "exchange": ...}` drops one, `{"action": "unsubscribe"}` drops all.
+Receive: `{"symbol": "BTCUSDT", "exchange": "bybit_futures", "price": 45000.5, "timestamp": "..."}`
+
+Exchanges:
+- `binance_futures` (all markets, last price from `!miniTicker@arr` on `/market/ws`), `gate_futures` (all markets): also build candles and spike alerts (`CANDLE_EXCHANGES`).
+- `bybit_futures`, `kucoin_futures`, `aster_futures`, `hyperliquid`: live price only, connected on demand while someone watches the symbol (trade or ticker streams, sub-second).
+
+Trigger's trail-rs (trailing take profit) uses this as its primary price source.
+
+### Auth
+
+Every endpoint except `/health` needs `API_KEY` when it is set (HTTP `x-api-key` header). In production Caddy terminates TLS for `DOMAIN` and only ports 80/443 are open (`docker compose up -d --build`).
 
 ### Candles (REST)
 

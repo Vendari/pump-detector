@@ -25,10 +25,13 @@ class PriceBroadcaster:
         self._latest_prices: Dict[Tuple[str, str], PriceUpdate] = {}
         self._lock = asyncio.Lock()
 
-    def subscribe(self, symbol: str, exchange: str) -> asyncio.Queue:
-        """Create a subscription queue for symbol/exchange."""
+    def subscribe(
+        self, symbol: str, exchange: str, queue: Optional[asyncio.Queue] = None
+    ) -> asyncio.Queue:
+        """Subscribe a queue (a new one unless given) to symbol/exchange."""
         key = (symbol.upper(), exchange)
-        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        if queue is None:
+            queue = asyncio.Queue(maxsize=100)
         if key not in self._subscribers:
             self._subscribers[key] = set()
         self._subscribers[key].add(queue)

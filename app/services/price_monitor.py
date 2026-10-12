@@ -10,7 +10,9 @@ import asyncio
 import logging
 from typing import Dict, List, Set
 
+from app.config import settings
 from app.exchanges.base import BaseExchange
+from app.exchanges.on_demand import OnDemandExchange
 from app.models.price import PriceUpdate
 from app.database.mongodb import mongodb_service
 from app.services.candle_service import candle_service
@@ -61,6 +63,20 @@ class PriceMonitor:
         """Remove a live price subscription."""
         if symbol in self._live_subscribers:
             self._live_subscribers[symbol].discard(exchange)
+
+    def watch(self, symbol: str, exchange: str) -> bool:
+        """A /ws/price client wants this market. False if the exchange is unknown."""
+        for ex in self.exchanges:
+            if ex.exchange_name == exchange:
+                if isinstance(ex, OnDemandExchange):
+                    ex.watch(symbol)
+                return True
+        return False
+
+    def unwatch(self, symbol: str, exchange: str) -> None:
+        for ex in self.exchanges:
+            if ex.exchange_name == exchange and isinstance(ex, OnDemandExchange):
+                ex.unwatch(symbol)
 
     def get_live_subscribers(self, symbol: str, exchange: str) -> bool:
         """Check if there are subscribers for this symbol/exchange."""
@@ -131,6 +147,11 @@ class PriceMonitor:
 
         # Broadcast for WebSocket subscribers
         await price_broadcaster.broadcast(price_update)
+
+        # Candles and spike alerts only for the configured exchanges; the
+        # on-demand ones only serve live prices.
+        if price_update.exchange not in settings.candle_exchange_set:
+            return
 
         # Build candles from price update
         completed_candles = await candle_service.add_price_update(price_update)

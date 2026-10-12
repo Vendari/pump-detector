@@ -35,3 +35,5 @@ wheels/
 # Logs
 *.log
 logs/
+.venv/
+.pytest_cache/
