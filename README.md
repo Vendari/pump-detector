@@ -51,6 +51,12 @@ A dropped exchange connection is retried every 5 s. After 10 failed attempts in 
 
 Every endpoint except `/health` needs `API_KEY` when it is set (HTTP `x-api-key` header). In production Caddy terminates TLS for `DOMAIN` and only ports 80/443 are open (`docker compose up -d --build`).
 
+### Web UI
+
+`https://<host>/ui` (e.g. https://prices.trigger.fun/ui) shows every monitored price (search by symbol, filter by exchange, sort, refreshes every 2 s) and, on click, a candlestick chart of our own stored candles with an interval picker (refreshes every 5 s). Candles exist only for `CANDLE_EXCHANGES`.
+
+Everything under `/ui` (the page and its `/ui/api/prices`, `/ui/api/candles`, `/ui/api/exchanges` endpoints) uses HTTP Basic auth with `UI_USERNAME` / `UI_PASSWORD` (default `admin` / `admin`) instead of the API key. The API key does not open `/ui`, and the UI login does not open any other endpoint.
+
 ### Candles (REST)
 
 ```
@@ -97,6 +103,8 @@ DELETE /alerts/{alert_id}
 | `MONGODB_DB_NAME` | Database name | `crypto_pump_detector` |
 | `WEBHOOK_TIMEOUT_SECONDS` | Webhook request timeout | `10` |
 | `LOG_LEVEL` | Logging level | `INFO` |
+| `UI_USERNAME` | Basic auth user for `/ui` | `admin` |
+| `UI_PASSWORD` | Basic auth password for `/ui` | `admin` |
 
 ## Examples
 

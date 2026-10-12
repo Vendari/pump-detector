@@ -8,14 +8,17 @@ Features:
 """
 
 import asyncio
+import base64
+import binascii
+import hmac
 import json
 import logging
 from contextlib import asynccontextmanager
-
-import hmac
+from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.config import settings
 from app.database.mongodb import mongodb_service
@@ -41,6 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 VALID_INTERVALS = [i.value for i in CandleInterval]
+UI_HTML = Path(__file__).parent / "static" / "ui.html"
 
 
 @asynccontextmanager
@@ -104,9 +108,39 @@ def _key_ok(given: str | None) -> bool:
     return given is not None and hmac.compare_digest(given, settings.api_key)
 
 
+def _is_ui_path(path: str) -> bool:
+    return path == "/ui" or path.startswith("/ui/")
+
+
+def _basic_ok(header: str | None) -> bool:
+    """Check an `Authorization: Basic ...` header against the UI credentials."""
+    if not header or not header.lower().startswith("basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:].strip(), validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return False
+    username, sep, password = decoded.partition(":")
+    if not sep:
+        return False
+    user_ok = hmac.compare_digest(username.encode(), settings.ui_username.encode())
+    pass_ok = hmac.compare_digest(password.encode(), settings.ui_password.encode())
+    return user_ok and pass_ok
+
+
 @app.middleware("http")
 async def require_api_key(request: Request, call_next):
-    if request.url.path not in OPEN_PATHS and not _key_ok(request.headers.get("x-api-key")):
+    path = request.url.path
+    if _is_ui_path(path):
+        # The web UI uses Basic auth only; the API key is neither needed nor enough.
+        if not _basic_ok(request.headers.get("authorization")):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "authentication required"},
+                headers={"WWW-Authenticate": 'Basic realm="pump-detector"'},
+            )
+        return await call_next(request)
+    if path not in OPEN_PATHS and not _key_ok(request.headers.get("x-api-key")):
         return JSONResponse(status_code=401, content={"detail": "invalid api key"})
     return await call_next(request)
 
@@ -352,6 +386,89 @@ async def list_symbols(exchange: str):
     """List symbols for an exchange."""
     symbols = await mongodb_service.get_available_symbols(exchange)
     return {"exchange": exchange, "symbols": symbols}
+
+
+# --- Web UI (Basic auth, see require_api_key) ---
+
+def _utc_seconds(ts: datetime) -> float:
+    """Epoch seconds for a datetime; naive values are UTC."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.timestamp()
+
+
+@app.get("/ui", include_in_schema=False)
+async def ui_page():
+    return FileResponse(UI_HTML, media_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/ui/api/prices", include_in_schema=False)
+async def ui_prices():
+    """Every latest price the broadcaster holds."""
+    now = datetime.now(timezone.utc).timestamp()
+    rows = []
+    for update in list(price_broadcaster._latest_prices.values()):
+        ts = _utc_seconds(update.timestamp)
+        rows.append(
+            {
+                "symbol": update.symbol,
+                "exchange": update.exchange,
+                "price": update.price,
+                "timestamp": ts,
+                "age_seconds": round(max(0.0, now - ts), 1),
+            }
+        )
+    return JSONResponse(rows, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/ui/api/exchanges", include_in_schema=False)
+async def ui_exchanges():
+    candle_set = settings.candle_exchange_set
+    return {
+        "exchanges": [
+            {"name": e.exchange_name, "candles": e.exchange_name in candle_set}
+            for e in price_monitor.exchanges
+        ],
+        "candle_exchanges": sorted(candle_set),
+        "intervals": VALID_INTERVALS,
+    }
+
+
+@app.get("/ui/api/candles", include_in_schema=False)
+async def ui_candles(symbol: str, exchange: str, interval: str = "1m", limit: int = 100):
+    """Our stored candles, shaped for the chart (time in UTC seconds, oldest first)."""
+    if parse_interval(interval) is None:
+        raise HTTPException(status_code=400, detail=f"Invalid interval. Valid: {VALID_INTERVALS}")
+    symbol = symbol.upper()
+    limit = max(1, min(limit, 100))
+    stored = exchange in settings.candle_exchange_set
+    candles = []
+    if stored:
+        for c in await mongodb_service.get_candles(symbol, exchange, interval, limit):
+            ts = c.get("timestamp")
+            if not isinstance(ts, datetime):
+                continue
+            candles.append(
+                {
+                    "time": int(_utc_seconds(ts)),
+                    "open": c.get("open"),
+                    "high": c.get("high"),
+                    "low": c.get("low"),
+                    "close": c.get("close"),
+                    "volume": c.get("volume") or 0,
+                }
+            )
+    return JSONResponse(
+        {
+            "symbol": symbol,
+            "exchange": exchange,
+            "interval": interval,
+            "candles_stored": stored,
+            "candle_exchanges": sorted(settings.candle_exchange_set),
+            "candles": candles,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 if __name__ == "__main__":

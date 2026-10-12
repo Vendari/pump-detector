@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # WebSocket `x-api-key` header or `?key=`. Unset = open (local only).
     api_key: Optional[str] = None
 
+    # HTTP Basic auth for the web UI at /ui (instead of the API key).
+    ui_username: str = "admin"
+    ui_password: str = "admin"
+
     # Exchanges that build candles and run spike alerts (heavy on Mongo).
     # Other exchanges only serve live prices on /ws/price and /price.
     candle_exchanges: str = "binance_futures,gate_futures"
