@@ -13,6 +13,7 @@ from typing import Dict, List, Set
 from app.config import settings
 from app.exchanges.base import BaseExchange
 from app.exchanges.on_demand import OnDemandExchange
+from app.exchanges.reconnect import RETRY_SECONDS, ReconnectPolicy
 from app.models.price import PriceUpdate
 from app.database.mongodb import mongodb_service
 from app.services.candle_service import candle_service
@@ -115,28 +116,35 @@ class PriceMonitor:
         logger.info("Price monitor stopped")
 
     async def _monitor_exchange(self, exchange: BaseExchange) -> None:
-        """Monitor a single exchange with auto-reconnection on disconnect."""
-        reconnect_delay = 5.0
+        """
+        Monitor a single exchange, reconnecting on disconnect. Ten failed
+        attempts in a row pause the exchange for a day (ReconnectPolicy).
+        On-demand exchanges manage their own connection and pacing.
+        """
+        policy = ReconnectPolicy(exchange.exchange_name)
         while not self._stopping:
+            got_data = False
             try:
                 if not exchange.is_running:
                     if hasattr(exchange, "reconnect"):
-                        reconnected = await exchange.reconnect()
-                        if not reconnected:
-                            logger.warning(f"Reconnect failed, retrying in {reconnect_delay}s...")
-                            await asyncio.sleep(reconnect_delay)
-                            continue
+                        if not await exchange.reconnect():
+                            raise RuntimeError("reconnect failed")
                     else:
                         await exchange.connect()
                 async for price_update in exchange.subscribe_all_tickers():
+                    if not got_data:
+                        got_data = True
+                        policy.success()
                     await self._process_price_update(price_update)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.error(f"Error monitoring {exchange.exchange_name}: {e}")
-            if not exchange.is_running:
-                logger.info(f"Connection closed for {exchange.exchange_name}, reconnecting in {reconnect_delay}s...")
-            await asyncio.sleep(reconnect_delay)
+            if self._stopping:
+                break
+            delay = RETRY_SECONDS if got_data else policy.failure()
+            logger.info(f"{exchange.exchange_name}: reconnecting in {delay:.0f}s")
+            await asyncio.sleep(delay)
 
     async def _process_price_update(self, price_update: PriceUpdate) -> None:
         """Process a price update: build candles, check alerts."""

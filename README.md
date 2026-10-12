@@ -43,6 +43,10 @@ Exchanges:
 
 Trigger's trail-rs (trailing take profit) uses this as its primary price source.
 
+### Reconnects
+
+A dropped exchange connection is retried every 5 s. After 10 failed attempts in a row the next attempt waits 24 h, so a broken feed never gets the server rate limited; any received price resets the count.
+
 ### Auth
 
 Every endpoint except `/health` needs `API_KEY` when it is set (HTTP `x-api-key` header). In production Caddy terminates TLS for `DOMAIN` and only ports 80/443 are open (`docker compose up -d --build`).

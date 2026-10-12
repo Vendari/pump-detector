@@ -27,6 +27,7 @@ import aiohttp
 import websockets
 
 from app.exchanges.base import BaseExchange
+from app.exchanges.reconnect import ReconnectPolicy
 from app.models.price import PriceUpdate
 
 logger = logging.getLogger(__name__)
@@ -106,22 +107,28 @@ class OnDemandExchange(BaseExchange):
         self._changed.set()
 
     async def subscribe_all_tickers(self) -> AsyncIterator[PriceUpdate]:
-        backoff = 1.0
+        policy = ReconnectPolicy(self.exchange_name)
         while self._is_running:
             if not self._wanted:
                 self._changed.clear()
                 await self._changed.wait()
                 continue
+            got_data = False
             try:
                 async for update in self._session():
-                    backoff = 1.0
+                    if not got_data:
+                        got_data = True
+                        policy.success()
                     yield update
+                continue  # closed because nothing is watched
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning(f"{self.exchange_name} price stream: {e}; reconnecting in {backoff:.0f}s")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 30.0)
+                logger.warning(f"{self.exchange_name} price stream: {e}")
+            # Ten failed attempts in a row wait a day (ReconnectPolicy).
+            delay = 5.0 if got_data else policy.failure()
+            logger.info(f"{self.exchange_name}: reconnecting in {delay:.0f}s")
+            await asyncio.sleep(delay)
 
     async def _session(self) -> AsyncIterator[PriceUpdate]:
         url = await self.ws_url()

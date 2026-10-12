@@ -28,8 +28,6 @@ class BinanceFuturesExchange(BaseExchange):
     def __init__(self):
         super().__init__(exchange_name=self.EXCHANGE_NAME)
         self._websocket: WebSocketClientProtocol | None = None
-        self._reconnect_attempts = 0
-        self._max_reconnect_attempts = 10
 
     async def connect(self) -> None:
         try:
@@ -41,7 +39,6 @@ class BinanceFuturesExchange(BaseExchange):
                 close_timeout=10,
             )
             self._is_running = True
-            self._reconnect_attempts = 0
             logger.info(f"Connected to {self.exchange_name}")
         except Exception as e:
             logger.error(f"Failed to connect to {self.exchange_name}: {e}")
@@ -109,10 +106,7 @@ class BinanceFuturesExchange(BaseExchange):
         return out
 
     async def reconnect(self) -> bool:
-        if self._reconnect_attempts >= self._max_reconnect_attempts:
-            # Keep trying, just slower: a dead feed must never stay dead.
-            self._reconnect_attempts = 0
-        self._reconnect_attempts += 1
+        # Pacing (and the day-long pause after ten failures) is PriceMonitor's.
         try:
             await self.disconnect()
             await self.connect()

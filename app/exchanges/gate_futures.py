@@ -41,8 +41,6 @@ class GateFuturesExchange(BaseExchange):
     def __init__(self) -> None:
         super().__init__(exchange_name="gate_futures")
         self._websocket: WebSocketClientProtocol | None = None
-        self._reconnect_attempts = 0
-        self._max_reconnect_attempts = 10
         self._subscribed_contracts: set[str] = set()
         self._refresh_task: asyncio.Task[None] | None = None
         self._http_session: aiohttp.ClientSession | None = None
@@ -196,7 +194,6 @@ class GateFuturesExchange(BaseExchange):
                 close_timeout=10,
             )
             self._is_running = True
-            self._reconnect_attempts = 0
             self._subscribed_contracts.clear()
             logger.info("Connected to Gate futures WebSocket")
         except Exception as e:
@@ -310,18 +307,7 @@ class GateFuturesExchange(BaseExchange):
         )
 
     async def reconnect(self) -> bool:
-        if self._reconnect_attempts >= self._max_reconnect_attempts:
-            logger.error(
-                "Gate futures: max reconnect attempts (%s) reached",
-                self._max_reconnect_attempts,
-            )
-            return False
-        self._reconnect_attempts += 1
-        logger.info(
-            "Gate futures reconnect attempt %s/%s",
-            self._reconnect_attempts,
-            self._max_reconnect_attempts,
-        )
+        # Pacing (and the day-long pause after ten failures) is PriceMonitor's.
         try:
             await self.disconnect()
             await self.connect()
