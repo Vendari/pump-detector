@@ -37,3 +37,6 @@ wheels/
 logs/
 .venv/
 .pytest_cache/
+
+# Rust build output
+rust/target/

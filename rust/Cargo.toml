@@ -1,0 +1,27 @@
+[package]
+name = "pump-detector"
+version = "3.0.0"
+edition = "2021"
+description = "Live prices, candles, pump/dump alerts and trailing take profit for Trigger"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+mongodb = "3"
+bson = { version = "2", features = ["chrono-0_4"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+parking_lot = "0.12"
+base64 = "0.22"
+subtle = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

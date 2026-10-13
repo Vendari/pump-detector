@@ -12,7 +12,9 @@ services:
     restart: unless-stopped
 
   app:
-    build: .
+    # Rust service (rust/README.md) since 2026-10-13; the Python app in app/
+    # is kept only for rollback (build: . ).
+    build: ./rust
     container_name: crypto_pump_detector_app
     environment:
       - MONGODB_URL=mongodb://mongodb:27017
