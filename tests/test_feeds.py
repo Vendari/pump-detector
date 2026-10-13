@@ -69,3 +69,24 @@ def test_watch_counts():
     assert ex.watched == {"ZESTUSDT"}
     ex.unwatch("ZESTUSDT")
     assert ex.watched == set()
+
+
+def test_builtin_tiers_only_send_ten_percent(monkeypatch):
+    from app.config import settings
+    from app.models.candle import Candle
+    from app.services.spike_detector import SpikeDetector
+
+    monkeypatch.setattr(settings, "webhook_url", "https://example.test/hook")
+    det = SpikeDetector()
+
+    def candle(close):
+        return Candle(symbol="ZESTUSDT", exchange="binance_futures", interval="5m",
+                      timestamp=__import__("datetime").datetime(2026, 10, 13),
+                      open=100.0, high=max(100.0, close), low=min(100.0, close), close=close)
+
+    five = det._check_builtin_tiers(candle(106.0), 6.0)
+    ten = det._check_builtin_tiers(candle(112.0), 12.0)
+    drop5 = det._check_builtin_tiers(candle(94.0), -6.0)
+    assert [a.webhook_url for a in five] == [None]
+    assert [a.webhook_url for a in drop5] == [None]
+    assert [a.webhook_url for a in ten] == ["https://example.test/hook"]

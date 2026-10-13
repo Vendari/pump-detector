@@ -119,7 +119,7 @@ class SpikeDetector:
                     current_price=candle.close,
                     change_percent=change_pct,
                     interval=candle.interval,
-                    webhook_url=settings.webhook_url,
+                    webhook_url=None,  # 5% tier: stored only, never sent
                     alert_id="builtin_5",
                 )
             )
@@ -149,7 +149,7 @@ class SpikeDetector:
                     current_price=candle.close,
                     change_percent=change_pct,
                     interval=candle.interval,
-                    webhook_url=settings.webhook_url,
+                    webhook_url=None,  # 5% tier: stored only, never sent
                     alert_id="builtin_5",
                 )
             )
