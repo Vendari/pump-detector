@@ -74,7 +74,7 @@ class WebhookService:
                 headers=headers or None,
                 timeout=timeout,
             ) as response:
-                if response.status == 200:
+                if 200 <= response.status < 300:
                     logger.info(f"Webhook sent to {webhook_url} for {alert.symbol}")
                     return True
                 else:
