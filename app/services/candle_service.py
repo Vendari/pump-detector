@@ -181,6 +181,11 @@ class CandleService:
 
         buf = self._candle_buffers[buffer_key]
         bucket_ts = truncate_to_interval(candle.timestamp, next_interval)
+        # Candles arrive in time order, so an older bucket that never got
+        # enough candles (a quiet market skipped some) can never complete.
+        # Drop it, or every gap stays in memory forever.
+        for ts in [ts for ts in buf if ts < bucket_ts]:
+            del buf[ts]
         if bucket_ts not in buf:
             buf[bucket_ts] = []
         buf[bucket_ts].append(candle)
