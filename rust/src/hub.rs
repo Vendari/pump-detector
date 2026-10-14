@@ -126,13 +126,23 @@ impl Hub {
         self.last_tick.get(exchange).copied()
     }
 
-    /// Markets of an exchange with a main price newer than `max_age_secs`.
-    pub fn priced(&self, exchange: &str, max_age_secs: i64) -> usize {
+    /// How many of `symbols` on an exchange have a price (main, last or
+    /// mark) newer than `max_age_secs`.
+    pub fn priced<'a>(
+        &self,
+        exchange: &str,
+        symbols: impl Iterator<Item = &'a String>,
+        max_age_secs: i64,
+    ) -> usize {
         let now = Utc::now();
-        self.latest
-            .iter()
-            .filter(|((ex, _), l)| {
-                ex == exchange && (now - l.timestamp).num_seconds() <= max_age_secs
+        let fresh = |t: DateTime<Utc>| (now - t).num_seconds() <= max_age_secs;
+        symbols
+            .filter(|sym| {
+                let key = (exchange.to_string(), (*sym).clone());
+                self.latest.get(&key).is_some_and(|l| fresh(l.timestamp))
+                    || self.quotes.get(&key).is_some_and(|q| {
+                        q.last.is_some_and(|x| fresh(x.1)) || q.mark.is_some_and(|x| fresh(x.1))
+                    })
             })
             .count()
     }
@@ -267,6 +277,7 @@ mod tests {
         assert_eq!(hub.latest("bybit_futures", "BTCUSDT").unwrap().price, 5.0);
         let q = hub.quote("bybit_futures", "BTCUSDT").unwrap();
         assert_eq!((q.last.unwrap().0, q.mark.unwrap().0), (5.0, 4.9));
-        assert_eq!(hub.priced("bybit_futures", 60), 1);
+        let listed = ["BTCUSDT".to_string(), "ETHUSDT".to_string()];
+        assert_eq!(hub.priced("bybit_futures", listed.iter(), 60), 1);
     }
 }

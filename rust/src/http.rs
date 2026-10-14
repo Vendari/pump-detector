@@ -550,7 +550,7 @@ async fn ui_overview(State(app): AppState) -> Response {
                     "connections": f.connections.len(),
                     "connections_up": f.up(),
                     "markets": app.markets.count(f.name),
-                    "priced_markets": hub.priced(f.name, 300),
+                    "priced_markets": hub.priced(f.name, app.markets.venue(f.name).keys(), 300),
                     "last_tick_age_seconds": hub.last_tick(f.name).map(|t| ((now - t).num_milliseconds().max(0) as f64 / 100.0).round() / 10.0),
                     "candles": app.cfg.candle_exchanges.contains(f.name),
                     "alerts": app.cfg.alert_exchanges.contains(f.name),

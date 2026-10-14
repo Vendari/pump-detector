@@ -143,6 +143,33 @@ pub async fn run(sink: Sink, alive: Alive, registry: Registry) {
 }
 
 async fn session(sink: &Sink, alive: &Alive, http: &reqwest::Client, registry: &Registry) -> bool {
+    // The contract list first: it can take a minute from some networks, and
+    // Gate drops a socket that stays quiet that long.
+    let contracts = match fetch_contracts(http).await {
+        Ok(c) if !c.is_empty() => {
+            registry.set(NAME, listed(&c));
+            c
+        }
+        other => {
+            match other {
+                Ok(_) => tracing::error!("Gate futures: no trading contracts from REST"),
+                Err(e) => tracing::error!("Gate futures: contract list failed: {e}"),
+            }
+            let known: Vec<String> = registry
+                .venue(NAME)
+                .into_values()
+                .map(|i| i.venue_symbol)
+                .collect();
+            if known.is_empty() {
+                return false;
+            }
+            tracing::warn!(
+                "Gate futures: using the last known {} contract(s)",
+                known.len()
+            );
+            known
+        }
+    };
     tracing::info!("Connecting to Gate futures: {WS_URL}");
     let mut req = WS_URL.into_client_request().expect("url");
     req.headers_mut()
@@ -166,28 +193,17 @@ async fn session(sink: &Sink, alive: &Alive, http: &reqwest::Client, registry: &
     tracing::info!("Connected to Gate futures WebSocket");
     let (mut tx, mut rx) = ws.split();
 
-    let mut subscribed: HashSet<String> = HashSet::new();
-    match fetch_contracts(http).await {
-        Ok(contracts) if !contracts.is_empty() => {
-            tracing::info!(
-                "Gate futures: initial subscribe for {} contract(s)",
-                contracts.len()
-            );
-            registry.set(NAME, listed(&contracts));
-            for batch in contracts.chunks(BATCH) {
-                if tx.send(Message::text(subscribe_msg(batch))).await.is_err() {
-                    return false;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            subscribed.extend(contracts);
-        }
-        Ok(_) => tracing::error!("Gate futures: no trading contracts from REST"),
-        Err(e) => {
-            tracing::error!("Gate futures: contract list failed: {e}");
+    tracing::info!(
+        "Gate futures: initial subscribe for {} contract(s)",
+        contracts.len()
+    );
+    for batch in contracts.chunks(BATCH) {
+        if tx.send(Message::text(subscribe_msg(batch))).await.is_err() {
             return false;
         }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    let mut subscribed: HashSet<String> = contracts.into_iter().collect();
     alive.set(true);
 
     let mut got = false;
