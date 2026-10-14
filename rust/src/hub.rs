@@ -147,6 +147,16 @@ impl Hub {
             .count()
     }
 
+    /// Markets of an exchange someone watches (a client or trailing).
+    pub fn watched(&self, exchange: &str) -> usize {
+        let clients = self.client_watch.keys().filter(|m| m.0 == exchange);
+        let trailing = self
+            .trailing_watch
+            .iter()
+            .filter(|m| m.0 == exchange && !self.client_watch.contains_key(*m));
+        clients.count() + trailing.count()
+    }
+
     /// A /v1 client watches a market (so the venue streams it even before
     /// its contract list has it).
     pub fn watch(&mut self, market: &Market) {

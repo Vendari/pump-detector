@@ -18,7 +18,7 @@ pub struct Config {
     pub api_key: Option<String>,
     pub ui_username: String,
     pub ui_password: String,
-    /// Exchanges that build candles (default: all six).
+    /// Exchanges that build candles (default: the six futures venues).
     pub candle_exchanges: HashSet<String>,
     /// Exchanges whose candles run pump/dump alerts (default Binance and
     /// Gate: alerts reach the api, which DMs users and can start price-alert
@@ -70,7 +70,7 @@ impl Config {
             ui_username: var("UI_USERNAME").unwrap_or_else(|| "admin".into()),
             ui_password: var("UI_PASSWORD").unwrap_or_else(|| "admin".into()),
             candle_exchanges: list(
-                var("CANDLE_EXCHANGES").unwrap_or_else(|| crate::feeds::EXCHANGES.join(",")),
+                var("CANDLE_EXCHANGES").unwrap_or_else(|| crate::feeds::FUTURES.join(",")),
             )
             .into_iter()
             .collect(),

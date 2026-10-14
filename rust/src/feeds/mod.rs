@@ -1,5 +1,6 @@
-//! Exchange price feeds. All six venues stream every USDT perpetual they
-//! list, with last and mark prices; see each module for its streams.
+//! Exchange price feeds. All six futures venues stream every USDT perpetual
+//! they list, with last and mark prices; four spot venues connect on demand
+//! as a fallback for tokens with no futures market. See each module.
 
 pub mod binance;
 pub mod gate;
@@ -16,8 +17,8 @@ use crate::model::PriceUpdate;
 
 pub type Sink = mpsc::Sender<Vec<PriceUpdate>>;
 
-/// Every exchange name, in display order.
-pub const EXCHANGES: [&str; 6] = [
+/// Futures exchange names, in display order.
+pub const FUTURES: [&str; 6] = [
     "binance_futures",
     "gate_futures",
     "bybit_futures",
@@ -25,6 +26,24 @@ pub const EXCHANGES: [&str; 6] = [
     "aster_futures",
     "hyperliquid",
 ];
+
+/// Every exchange name: futures first, then the spot fallbacks.
+pub const EXCHANGES: [&str; 10] = [
+    "binance_futures",
+    "gate_futures",
+    "bybit_futures",
+    "kucoin_futures",
+    "aster_futures",
+    "hyperliquid",
+    "binance_spot",
+    "bybit_spot",
+    "gate_spot",
+    "kucoin_spot",
+];
+
+pub fn is_spot(exchange: &str) -> bool {
+    exchange.ends_with("_spot")
+}
 
 /// Reconnect pacing: 5 s between attempts; after 10 failed attempts in a
 /// row the next one waits a day, so a feed that keeps failing (an IP ban,

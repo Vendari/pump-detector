@@ -530,6 +530,10 @@ fn label(name: &str) -> &'static str {
         "kucoin_futures" => "KuCoin",
         "aster_futures" => "Aster",
         "hyperliquid" => "Hyperliquid",
+        "binance_spot" => "Binance spot",
+        "bybit_spot" => "Bybit spot",
+        "gate_spot" => "Gate spot",
+        "kucoin_spot" => "KuCoin spot",
         _ => "Other",
     }
 }
@@ -554,6 +558,8 @@ async fn ui_overview(State(app): AppState) -> Response {
                     "last_tick_age_seconds": hub.last_tick(f.name).map(|t| ((now - t).num_milliseconds().max(0) as f64 / 100.0).round() / 10.0),
                     "candles": app.cfg.candle_exchanges.contains(f.name),
                     "alerts": app.cfg.alert_exchanges.contains(f.name),
+                    "on_demand": Venue::from_name(f.name).is_some_and(|v| !v.always_on()),
+                    "watched": hub.watched(f.name),
                 })
             })
             .collect()

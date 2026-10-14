@@ -69,26 +69,40 @@ fn info(venue_symbol: &str) -> MarketInfo {
 }
 
 pub fn binance_like(body: &Value) -> VenueMarkets {
+    binance_list(body, true)
+}
+
+/// Binance-style exchangeInfo: USDT perpetuals, or USDT spot pairs.
+pub fn binance_list(body: &Value, perpetual: bool) -> VenueMarkets {
     body.get("symbols")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter(|s| s.get("status").and_then(Value::as_str) == Some("TRADING"))
         .filter(|s| s.get("quoteAsset").and_then(Value::as_str) == Some("USDT"))
-        .filter(|s| s.get("contractType").and_then(Value::as_str) == Some("PERPETUAL"))
+        .filter(|s| {
+            !perpetual || s.get("contractType").and_then(Value::as_str) == Some("PERPETUAL")
+        })
         .filter_map(|s| s.get("symbol")?.as_str())
         .map(|s| (s.to_uppercase(), info(s)))
         .collect()
 }
 
 pub fn bybit(body: &Value) -> VenueMarkets {
+    bybit_list(body, true)
+}
+
+/// Bybit instruments: linear USDT perpetuals, or USDT spot pairs.
+pub fn bybit_list(body: &Value, perpetual: bool) -> VenueMarkets {
     body.pointer("/result/list")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter(|s| s.get("status").and_then(Value::as_str) == Some("Trading"))
         .filter(|s| s.get("quoteCoin").and_then(Value::as_str) == Some("USDT"))
-        .filter(|s| s.get("contractType").and_then(Value::as_str) == Some("LinearPerpetual"))
+        .filter(|s| {
+            !perpetual || s.get("contractType").and_then(Value::as_str) == Some("LinearPerpetual")
+        })
         .filter_map(|s| s.get("symbol")?.as_str())
         .map(|s| (s.to_uppercase(), info(s)))
         .collect()
@@ -119,6 +133,35 @@ pub fn kucoin(body: &Value) -> VenueMarkets {
                     multiplier,
                 },
             ))
+        })
+        .collect()
+}
+
+pub fn gate_spot(rows: &Value) -> VenueMarkets {
+    rows.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r.get("trade_status").and_then(Value::as_str) == Some("tradable"))
+        .filter(|r| r.get("quote").and_then(Value::as_str) == Some("USDT"))
+        .filter_map(|r| {
+            let id = r.get("id")?.as_str()?;
+            let base = r.get("base")?.as_str()?.to_uppercase();
+            Some((format!("{base}USDT"), info(id)))
+        })
+        .collect()
+}
+
+pub fn kucoin_spot(body: &Value) -> VenueMarkets {
+    body.get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|s| s.get("enableTrading").and_then(Value::as_bool) == Some(true))
+        .filter(|s| s.get("quoteCurrency").and_then(Value::as_str) == Some("USDT"))
+        .filter_map(|s| {
+            let id = s.get("symbol")?.as_str()?;
+            let base = s.get("baseCurrency")?.as_str()?.to_uppercase();
+            Some((format!("{base}USDT"), info(id)))
         })
         .collect()
 }
@@ -165,6 +208,28 @@ pub async fn fetch(http: &reqwest::Client, exchange: &str) -> Result<VenueMarket
             )
             .await?,
         ),
+        "binance_spot" => binance_list(
+            &get_json(
+                http,
+                "https://api.binance.com/api/v3/exchangeInfo?permissions=SPOT",
+            )
+            .await?,
+            false,
+        ),
+        "bybit_spot" => bybit_list(
+            &get_json(
+                http,
+                "https://api.bybit.com/v5/market/instruments-info?category=spot&limit=1000",
+            )
+            .await?,
+            false,
+        ),
+        "gate_spot" => {
+            gate_spot(&get_json(http, "https://api.gateio.ws/api/v4/spot/currency_pairs").await?)
+        }
+        "kucoin_spot" => {
+            kucoin_spot(&get_json(http, "https://api.kucoin.com/api/v2/symbols").await?)
+        }
         "kucoin_futures" => kucoin(
             &get_json(
                 http,
@@ -233,6 +298,29 @@ mod tests {
         let hm = hyperliquid(&h);
         assert_eq!(hm.keys().collect::<Vec<_>>(), vec!["BTCUSDT", "KPEPEUSDT"]);
         assert_eq!(hm["KPEPEUSDT"].venue_symbol, "kPEPE");
+    }
+
+    #[test]
+    fn parses_spot_lists() {
+        let g: Value = serde_json::from_str(
+            r#"[{"id":"PEPE_USDT","base":"PEPE","quote":"USDT","trade_status":"tradable"},
+                {"id":"X_BTC","base":"X","quote":"BTC","trade_status":"tradable"},
+                {"id":"Y_USDT","base":"Y","quote":"USDT","trade_status":"untradable"}]"#,
+        )
+        .unwrap();
+        assert_eq!(gate_spot(&g)["PEPEUSDT"].venue_symbol, "PEPE_USDT");
+        assert_eq!(gate_spot(&g).len(), 1);
+        let k: Value = serde_json::from_str(
+            r#"{"data":[{"symbol":"AVA-USDT","baseCurrency":"AVA","quoteCurrency":"USDT","enableTrading":true}]}"#,
+        )
+        .unwrap();
+        assert_eq!(kucoin_spot(&k)["AVAUSDT"].venue_symbol, "AVA-USDT");
+        let b: Value = serde_json::from_str(
+            r#"{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","quoteAsset":"USDT"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(binance_list(&b, false).len(), 1);
+        assert_eq!(binance_list(&b, true).len(), 0);
     }
 
     #[test]

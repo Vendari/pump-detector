@@ -2,7 +2,9 @@
 //!
 //! - `GET /v1/markets[?exchange=…][&symbol=…]`: listed markets per venue.
 //! - `GET /v1/prices?m=bybit_futures:BTCUSDT,…` or `?symbol=BTCUSDT`: last
-//!   and mark price with their age (up to 200 markets).
+//!   and mark price with their age (up to 200 markets). Futures venues come
+//!   first; spot venues (`*_spot`, last price only) are the fallback for a
+//!   token with no futures market.
 //! - `GET /v1/candles?exchange&symbol&interval=1m&limit=300[&end=<unix s>]`:
 //!   our candles, gaps filled from the exchange's history (at most once a
 //!   minute per chart), plus the open candle.
@@ -232,6 +234,7 @@ pub fn price_value(ex: &str, sym: &str, l: Option<Latest>, q: Quote, now: DateTi
     json!({
         "exchange": ex,
         "symbol": sym,
+        "market": if crate::feeds::is_spot(ex) { "spot" } else { "futures" },
         "price": l.map(|l| l.price),
         "last": q.last.map(|x| x.0),
         "mark": q.mark.map(|x| x.0),
@@ -266,7 +269,8 @@ async fn markets(State(app): AppState, Query(q): Query<MarketsQuery>) -> Respons
                 let priced = hub
                     .latest(ex, &sym)
                     .is_some_and(|l| (now - l.timestamp).num_seconds() < 300);
-                json!({"exchange": ex, "symbol": sym, "venue_symbol": info.venue_symbol, "priced": priced})
+                json!({"exchange": ex, "symbol": sym, "venue_symbol": info.venue_symbol, "priced": priced,
+                       "market": if crate::feeds::is_spot(ex) { "spot" } else { "futures" }})
             })
             .collect();
         return Json(json!({"symbol": sym, "markets": rows})).into_response();
@@ -320,6 +324,19 @@ async fn prices(State(app): AppState, Query(q): Query<PricesQuery>) -> Response 
         );
     }
     let only_priced = q.m.is_none();
+    // Spot is a fallback: a symbol with no futures market gets its listed
+    // spot markets streamed for two minutes, so a repeat call has prices
+    // (the stream is the way to follow one for longer).
+    if let Some(sym) = q.symbol.as_deref().map(norm) {
+        let listed = app.markets.exchanges_for(&sym);
+        if !listed.iter().any(|(ex, _)| !crate::feeds::is_spot(ex)) {
+            let spot: Vec<(String, String)> = listed
+                .iter()
+                .map(|(ex, _)| (ex.to_string(), sym.clone()))
+                .collect();
+            watch_for(&app, spot, Duration::from_secs(120));
+        }
+    }
     let now = Utc::now();
     let hub = app.hub.lock();
     let rows: Vec<Value> = wanted
@@ -338,6 +355,27 @@ async fn prices(State(app): AppState, Query(q): Query<PricesQuery>) -> Response 
         Json(json!({"prices": rows})),
     )
         .into_response()
+}
+
+/// Watch markets for a while (spot venues connect for them).
+fn watch_for(app: &Arc<App>, markets: Vec<(String, String)>, how_long: Duration) {
+    if markets.is_empty() {
+        return;
+    }
+    {
+        let mut hub = app.hub.lock();
+        for m in &markets {
+            hub.watch(m);
+        }
+    }
+    let app = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(how_long).await;
+        let mut hub = app.hub.lock();
+        for m in &markets {
+            hub.unwatch(m);
+        }
+    });
 }
 
 // --- /v1/candles ---
@@ -402,7 +440,8 @@ pub async fn candle_series(
     let from = interval.bucket_start(DateTime::from_timestamp(end, 0).unwrap_or_default())
         - (limit - 1) * secs;
     let thin = (bars.len() as f64) < 0.9 * limit as f64;
-    if allow_backfill && thin {
+    // Exchange history covers the futures venues only.
+    if allow_backfill && thin && !crate::feeds::is_spot(ex) {
         let key = (ex.to_string(), sym.to_string(), interval.as_str());
         let due = {
             let mut recent = app.backfilled.lock();

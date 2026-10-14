@@ -160,6 +160,7 @@
   .ex-card[data-status="healthy"]::before { background: var(--ok); }
   .ex-card[data-status="partial"]::before, .ex-card[data-status="stale"]::before { background: var(--warn); }
   .ex-card[data-status="down"]::before { background: var(--bad); }
+  .ex-card[data-status="idle"]::before { background: var(--border-strong); }
   .ex-card:hover { border-color: var(--border-strong); }
   .ex-card[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
   .ex-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
@@ -514,9 +515,11 @@
   var DEFAULT_INTERVALS = ["10s", "30s", "1m", "2m", "3m", "4m", "5m", "10m", "15m", "30m", "1h", "3h", "6h", "12h", "1D", "1W"];
   var EX_LABELS = {
     binance_futures: "Binance", gate_futures: "Gate", bybit_futures: "Bybit",
-    kucoin_futures: "KuCoin", aster_futures: "Aster", hyperliquid: "Hyperliquid"
+    kucoin_futures: "KuCoin", aster_futures: "Aster", hyperliquid: "Hyperliquid",
+    binance_spot: "Binance spot", bybit_spot: "Bybit spot", gate_spot: "Gate spot", kucoin_spot: "KuCoin spot"
   };
-  var EX_ORDER = ["binance_futures", "bybit_futures", "gate_futures", "kucoin_futures", "aster_futures", "hyperliquid"];
+  var EX_ORDER = ["binance_futures", "bybit_futures", "gate_futures", "kucoin_futures", "aster_futures", "hyperliquid",
+    "binance_spot", "bybit_spot", "gate_spot", "kucoin_spot"];
 
   var state = {
     prices: [],
@@ -667,12 +670,14 @@
   function exStatus(x) {
     var total = isNum(x.connections) ? x.connections : null;
     var up = isNum(x.connections_up) ? x.connections_up : null;
+    // Spot feeds connect only while someone watches a spot-only token.
+    if (x.on_demand && !x.watched) return "idle";
     if (x.connected === false || up === 0) return "down";
     if (total != null && up != null && up < total) return "partial";
     if (isNum(x.last_tick_age_seconds) && x.last_tick_age_seconds > STALE_S) return "stale";
     return "healthy";
   }
-  var STATUS_TEXT = { healthy: "Healthy", partial: "Partial", stale: "Stale", down: "Down", unknown: "Unknown" };
+  var STATUS_TEXT = { healthy: "Healthy", partial: "Partial", stale: "Stale", down: "Down", idle: "Idle", unknown: "Unknown" };
 
   function exchangesFromPrices() {
     var by = Object.create(null);
@@ -748,6 +753,7 @@
     if (counts.partial) parts.push(counts.partial + " partial");
     if (counts.stale) parts.push(counts.stale + " stale");
     if (counts.down) parts.push(counts.down + " down");
+    if (counts.idle) parts.push(counts.idle + " idle");
     $("health-summary").textContent = parts.join(", ");
   }
 

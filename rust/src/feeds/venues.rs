@@ -22,6 +22,13 @@
 //!   `activeAssetCtx` (mark) per coin, one subscription per message.
 //!
 //! The main price (`PriceUpdate::price`) is the last trade, as before.
+//!
+//! Spot (Binance, Bybit, Gate, KuCoin) is a fallback for tokens with no
+//! futures market: those venues load their USDT pair lists but connect only
+//! for the symbols someone watches, and close a minute after the last one
+//! leaves. Streams: Binance `wss://stream.binance.com:9443/ws` `<sym>@aggTrade`;
+//! Bybit `/v5/public/spot` `tickers.<SYM>`; Gate `wss://api.gateio.ws/ws/v4/`
+//! `spot.tickers`; KuCoin spot bullet token, `/market/ticker:<BASE-USDT>`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -38,6 +45,8 @@ use crate::model::PriceUpdate;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const APP_PING_EVERY: Duration = Duration::from_secs(15);
+/// An on-demand (spot) connection with nothing to watch closes after this.
+const LINGER: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Venue {
@@ -45,6 +54,10 @@ pub enum Venue {
     Kucoin,
     Aster,
     Hyperliquid,
+    BinanceSpot,
+    BybitSpot,
+    GateSpot,
+    KucoinSpot,
 }
 
 pub fn usdt(symbol: &str) -> String {
@@ -77,11 +90,15 @@ pub struct Tick {
 }
 
 impl Venue {
-    pub const ALL: [Venue; 4] = [
+    pub const ALL: [Venue; 8] = [
         Venue::Bybit,
         Venue::Kucoin,
         Venue::Aster,
         Venue::Hyperliquid,
+        Venue::BinanceSpot,
+        Venue::BybitSpot,
+        Venue::GateSpot,
+        Venue::KucoinSpot,
     ];
 
     pub fn name(self) -> &'static str {
@@ -90,7 +107,23 @@ impl Venue {
             Venue::Kucoin => "kucoin_futures",
             Venue::Aster => "aster_futures",
             Venue::Hyperliquid => "hyperliquid",
+            Venue::BinanceSpot => "binance_spot",
+            Venue::BybitSpot => "bybit_spot",
+            Venue::GateSpot => "gate_spot",
+            Venue::KucoinSpot => "kucoin_spot",
         }
+    }
+
+    /// Futures venues stream every market; spot connects on demand.
+    pub fn always_on(self) -> bool {
+        matches!(
+            self,
+            Venue::Bybit | Venue::Kucoin | Venue::Aster | Venue::Hyperliquid
+        )
+    }
+
+    fn is_kucoin(self) -> bool {
+        matches!(self, Venue::Kucoin | Venue::KucoinSpot)
     }
 
     pub fn from_name(name: &str) -> Option<Venue> {
@@ -107,6 +140,7 @@ impl Venue {
             Venue::Kucoin => 5,
             Venue::Aster => 4,
             Venue::Hyperliquid => 2,
+            _ => 1,
         }
     }
 
@@ -120,6 +154,8 @@ impl Venue {
                 format!("{}USDTM", if base == "BTC" { "XBT" } else { base })
             }
             Venue::Hyperliquid => s[..s.len() - 4].to_string(),
+            Venue::GateSpot => format!("{}_USDT", &s[..s.len() - 4]),
+            Venue::KucoinSpot => format!("{}-USDT", &s[..s.len() - 4]),
             _ => s,
         }
     }
@@ -129,7 +165,7 @@ impl Venue {
             return Vec::new();
         }
         match self {
-            Venue::Bybit => syms
+            Venue::Bybit | Venue::BybitSpot => syms
                 .chunks(10)
                 .map(|c| {
                     json!({"op": if subscribe {"subscribe"} else {"unsubscribe"},
@@ -152,7 +188,25 @@ impl Venue {
                 }
                 out
             }
-            Venue::Aster => syms
+            Venue::GateSpot => syms
+                .chunks(50)
+                .map(|c| {
+                    json!({"time": Utc::now().timestamp(), "channel": "spot.tickers",
+                           "event": if subscribe {"subscribe"} else {"unsubscribe"}, "payload": c})
+                    .to_string()
+                })
+                .collect(),
+            Venue::KucoinSpot => syms
+                .chunks(90)
+                .map(|c| {
+                    *msg_id += 1;
+                    json!({"id": msg_id.to_string(), "type": if subscribe {"subscribe"} else {"unsubscribe"},
+                           "topic": format!("/market/ticker:{}", c.join(",")),
+                           "privateChannel": false, "response": true})
+                    .to_string()
+                })
+                .collect(),
+            Venue::Aster | Venue::BinanceSpot => syms
                 .chunks(100)
                 .map(|c| {
                     *msg_id += 1;
@@ -183,7 +237,7 @@ impl Venue {
         };
         let s = |x: Option<&Value>| x.and_then(Value::as_str).map(str::to_string);
         match self {
-            Venue::Bybit => {
+            Venue::Bybit | Venue::BybitSpot => {
                 if !v
                     .get("topic")
                     .and_then(Value::as_str)
@@ -243,7 +297,46 @@ impl Venue {
                 }
                 _ => Vec::new(),
             },
-            Venue::Aster => {
+            Venue::GateSpot => {
+                if v.get("channel").and_then(Value::as_str) != Some("spot.tickers")
+                    || v.get("event").and_then(Value::as_str) != Some("update")
+                {
+                    return Vec::new();
+                }
+                let r = v.get("result");
+                match (
+                    s(r.and_then(|r| r.get("currency_pair"))),
+                    num(r.and_then(|r| r.get("last"))),
+                ) {
+                    (Some(sym), Some(p)) => vec![Tick {
+                        venue_symbol: sym.to_uppercase(),
+                        last: Some(p),
+                        quote_volume_24h: num(r.and_then(|r| r.get("quote_volume"))),
+                        ..Tick::default()
+                    }],
+                    _ => Vec::new(),
+                }
+            }
+            Venue::KucoinSpot => {
+                if v.get("subject").and_then(Value::as_str) != Some("trade.ticker") {
+                    return Vec::new();
+                }
+                let sym = v
+                    .get("topic")
+                    .and_then(Value::as_str)
+                    .and_then(|t| t.rsplit_once(':'))
+                    .map(|(_, s)| s.to_uppercase());
+                match (sym, num(v.pointer("/data/price"))) {
+                    (Some(sym), Some(p)) => vec![Tick {
+                        venue_symbol: sym,
+                        last: Some(p),
+                        size: num(v.pointer("/data/size")),
+                        ..Tick::default()
+                    }],
+                    _ => Vec::new(),
+                }
+            }
+            Venue::Aster | Venue::BinanceSpot => {
                 if v.get("e").and_then(Value::as_str) != Some("aggTrade") {
                     return Vec::new();
                 }
@@ -292,12 +385,15 @@ impl Venue {
 
     fn ping_message(self, msg_id: &mut u64) -> Option<String> {
         match self {
-            Venue::Bybit => Some(json!({"op": "ping"}).to_string()),
-            Venue::Kucoin => {
+            Venue::Bybit | Venue::BybitSpot => Some(json!({"op": "ping"}).to_string()),
+            Venue::Kucoin | Venue::KucoinSpot => {
                 *msg_id += 1;
                 Some(json!({"id": msg_id.to_string(), "type": "ping"}).to_string())
             }
-            Venue::Aster => None,
+            Venue::GateSpot => {
+                Some(json!({"time": Utc::now().timestamp(), "channel": "spot.ping"}).to_string())
+            }
+            Venue::Aster | Venue::BinanceSpot => None,
             Venue::Hyperliquid => Some(json!({"method": "ping"}).to_string()),
         }
     }
@@ -307,7 +403,7 @@ impl Venue {
     fn send_gap(self) -> Duration {
         match self {
             Venue::Hyperliquid => Duration::from_millis(15),
-            Venue::Kucoin => Duration::from_millis(120),
+            Venue::Kucoin | Venue::KucoinSpot => Duration::from_millis(120),
             _ => Duration::from_millis(5),
         }
     }
@@ -317,9 +413,17 @@ impl Venue {
             Venue::Bybit => Ok("wss://stream.bybit.com/v5/public/linear".into()),
             Venue::Aster => Ok("wss://fstream.asterdex.com/ws".into()),
             Venue::Hyperliquid => Ok("wss://api.hyperliquid.xyz/ws".into()),
-            Venue::Kucoin => {
+            Venue::BinanceSpot => Ok("wss://stream.binance.com:9443/ws".into()),
+            Venue::BybitSpot => Ok("wss://stream.bybit.com/v5/public/spot".into()),
+            Venue::GateSpot => Ok("wss://api.gateio.ws/ws/v4/".into()),
+            Venue::Kucoin | Venue::KucoinSpot => {
+                let bullet = if self == Venue::Kucoin {
+                    "https://api-futures.kucoin.com/api/v1/bullet-public"
+                } else {
+                    "https://api.kucoin.com/api/v1/bullet-public"
+                };
                 let body: Value = http
-                    .post("https://api-futures.kucoin.com/api/v1/bullet-public")
+                    .post(bullet)
                     .send()
                     .await
                     .and_then(|r| r.error_for_status())
@@ -400,11 +504,15 @@ pub fn split(venue: Venue, listed: &VenueMarkets, watched: &BTreeSet<String>) ->
             },
         );
     };
-    for (sym, info) in listed {
-        add(sym, info.clone());
+    if venue.always_on() {
+        for (sym, info) in listed {
+            add(sym, info.clone());
+        }
     }
     for sym in watched {
-        if !listed.contains_key(sym) {
+        if let Some(info) = listed.get(sym).filter(|_| !venue.always_on()) {
+            add(sym, info.clone());
+        } else if !listed.contains_key(sym) {
             add(
                 sym,
                 MarketInfo {
@@ -506,7 +614,13 @@ async fn run_shard(
             continue;
         }
         match session(venue, &label, &sink, &alive, &mut wanted, &http).await {
-            Ok(()) => return,
+            // Idle (nothing watched for a minute), or shutting down.
+            Ok(()) => {
+                alive.set(false);
+                if sink.is_closed() || wanted.has_changed().is_err() {
+                    return;
+                }
+            }
             Err((got, e)) => {
                 alive.set(false);
                 if sink.is_closed() {
@@ -538,7 +652,7 @@ async fn session(
     .map_err(|_| (false, "connect timed out".to_string()))?
     .map_err(|e| (false, e.to_string()))?;
     let (mut tx, mut rx) = ws.split();
-    if venue == Venue::Kucoin {
+    if venue.is_kucoin() {
         // KuCoin drops subscriptions sent before its welcome message.
         let welcome = async {
             while let Some(Ok(m)) = rx.next().await {
@@ -561,6 +675,7 @@ async fn session(
     let mut subscribed = ShardSet::new();
     let mut got = false;
     let mut last_frame = Instant::now();
+    let mut empty_since: Option<Instant> = None;
     let mut sync = true;
     let mut tick = tokio::time::interval(Duration::from_secs(5));
     let mut app_ping = tokio::time::interval(APP_PING_EVERY);
@@ -604,7 +719,9 @@ async fn session(
             subscribed = want;
             alive.set(!subscribed.is_empty());
             if subscribed.is_empty() {
-                return Err((got, "nothing to stream".into()));
+                empty_since.get_or_insert_with(Instant::now);
+            } else {
+                empty_since = None;
             }
         }
         tokio::select! {
@@ -637,7 +754,11 @@ async fn session(
                 }
             }
             _ = tick.tick() => {
-                if last_frame.elapsed() > IDLE_TIMEOUT {
+                if empty_since.is_some_and(|t| t.elapsed() > LINGER) {
+                    tracing::info!("{label} price stream closed (nothing to watch)");
+                    return Ok(());
+                }
+                if empty_since.is_none() && last_frame.elapsed() > IDLE_TIMEOUT {
                     return Err((got, "no data for 60 s".into()));
                 }
             }
@@ -749,6 +870,53 @@ mod tests {
         assert!((u[0].volume.unwrap() - 0.5).abs() < 1e-9);
         assert!(!u[1].primary);
         assert_eq!(u[1].mark, Some(99.0));
+    }
+
+    #[test]
+    fn parses_spot() {
+        let g = Venue::GateSpot.parse(
+            r#"{"time":1,"channel":"spot.tickers","event":"update","result":{"currency_pair":"BTC_USDT","last":"64000.1","quote_volume":"5"}}"#,
+        );
+        assert_eq!(
+            (g[0].venue_symbol.as_str(), g[0].last),
+            ("BTC_USDT", Some(64000.1))
+        );
+        let k = Venue::KucoinSpot.parse(
+            r#"{"type":"message","topic":"/market/ticker:BTC-USDT","subject":"trade.ticker","data":{"price":"64001","size":"0.01"}}"#,
+        );
+        assert_eq!(
+            (k[0].venue_symbol.as_str(), k[0].last),
+            ("BTC-USDT", Some(64001.0))
+        );
+        let b = Venue::BinanceSpot.parse(r#"{"e":"aggTrade","s":"BTCUSDT","p":"64002","q":"1"}"#);
+        assert_eq!(b[0].last, Some(64002.0));
+        assert_eq!(Venue::GateSpot.venue_symbol("btc"), "BTC_USDT");
+        assert_eq!(Venue::KucoinSpot.venue_symbol("BTCUSDT"), "BTC-USDT");
+        let mut id = 0;
+        assert!(
+            Venue::GateSpot.subscription(&["BTC_USDT".into()], true, &mut id)[0]
+                .contains(r#""channel":"spot.tickers""#)
+        );
+    }
+
+    #[test]
+    fn spot_streams_only_watched_markets() {
+        let mut listed = VenueMarkets::new();
+        for s in ["BTCUSDT", "ETHUSDT"] {
+            listed.insert(
+                s.into(),
+                MarketInfo {
+                    venue_symbol: format!("{}_USDT", &s[..3]),
+                    multiplier: 1.0,
+                },
+            );
+        }
+        let watched: BTreeSet<String> = ["ETHUSDT".to_string()].into();
+        let all: BTreeMap<String, Sub> = split(Venue::GateSpot, &listed, &watched)
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(all.keys().collect::<Vec<_>>(), vec!["ETH_USDT"]);
     }
 
     #[test]
