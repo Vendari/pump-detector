@@ -1,6 +1,6 @@
-# Runs the Rust service next to the Python one for comparison: its own
-# database, no outgoing webhooks, trailing closes only logged. Reachable on
-# the box at 127.0.0.1:8001 only.
+# Runs a new build next to the live app for comparison: its own database,
+# no outgoing webhooks, trailing closes only logged, candles on every
+# exchange. Reachable on the box at 127.0.0.1:8001 only.
 #   docker compose -f docker-compose.yml -f docker-compose.shadow.yml up -d --build app-rs
 services:
   app-rs:
@@ -13,6 +13,7 @@ services:
       - MONGODB_DB_NAME=crypto_pump_detector_rs_shadow
       - WEBHOOK_URL=
       - TRAILING_CLOSE_URL=
+      - CANDLE_EXCHANGES=
     ports:
       - "127.0.0.1:8001:8000"
     depends_on:
