@@ -1,6 +1,7 @@
-//! MongoDB: candles (last 100 per market and interval), detected alerts
-//! (with a candle snapshot for later training) and custom alert configs.
-//! Same database, collections and document shapes as the Python service.
+//! MongoDB: candles (by default the last 1,000 per market and interval from
+//! 1m up, an hour of 10s and two hours of 30s), detected alerts (with a
+//! candle snapshot for later training) and custom alert configs. Same
+//! database, collections and document shapes as the Python service.
 
 use std::time::Duration;
 
@@ -15,8 +16,49 @@ use tokio::sync::mpsc;
 use crate::alerts::{PriceAlert, SpikeAlertConfig};
 use crate::model::{Candle, Interval};
 
+/// Candles per interval in a detected alert's snapshot and the legacy
+/// `/candles` default.
 pub const MAX_CANDLES_PER_INTERVAL: i64 = 100;
 const WRITE_CONCURRENCY: usize = 16;
+
+/// Candles kept per market for an interval.
+pub fn retention(i: Interval, configured: i64) -> i64 {
+    match i {
+        Interval::S10 => 360,
+        Interval::S30 => 240,
+        _ => configured,
+    }
+}
+
+/// One candle as the API serves it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bar {
+    /// Bucket start, Unix seconds.
+    pub start: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+}
+
+impl Bar {
+    pub fn json(&self) -> Value {
+        json!({"time": self.start, "open": self.open, "high": self.high, "low": self.low,
+               "close": self.close, "volume": self.volume})
+    }
+}
+
+fn bar_of(d: &Document) -> Option<Bar> {
+    Some(Bar {
+        start: d.get_datetime("timestamp").ok()?.timestamp_millis() / 1000,
+        open: d.get_f64("open").ok()?,
+        high: d.get_f64("high").ok()?,
+        low: d.get_f64("low").ok()?,
+        close: d.get_f64("close").ok()?,
+        volume: d.get_f64("volume").unwrap_or(0.0),
+    })
+}
 
 #[derive(Clone)]
 pub struct Store {
@@ -105,15 +147,16 @@ impl Store {
                     "symbol_exchange_interval_timestamp_idx",
                 ),
                 named(
-                    doc! {"symbol": 1, "exchange": 1, "interval": 1},
-                    "symbol_exchange_interval_idx",
-                ),
-                named(
                     doc! {"interval": 1, "timestamp": 1},
                     "interval_timestamp_idx",
                 ),
             ])
             .await?;
+        // A prefix of the index above, so it only cost memory and disk.
+        let _ = self
+            .candles
+            .drop_index("symbol_exchange_interval_idx")
+            .await;
         self.spike_alerts
             .create_indexes(vec![named(
                 doc! {"exchange": 1, "symbol": 1, "interval": 1},
@@ -172,9 +215,8 @@ impl Store {
         }
     }
 
-    /// Keep about MAX_CANDLES_PER_INTERVAL candles per market and interval:
-    /// delete candles older than that many intervals.
-    pub async fn trim_loop(self) {
+    /// Delete candles older than `retention` intervals.
+    pub async fn trim_loop(self, configured: i64) {
         let mut every = tokio::time::interval(Duration::from_secs(600));
         loop {
             every.tick().await;
@@ -182,7 +224,7 @@ impl Store {
             let mut deleted = 0;
             for i in Interval::ALL {
                 let cutoff = BsonDateTime::from_millis(
-                    (now - MAX_CANDLES_PER_INTERVAL * i.seconds()) * 1000,
+                    (now - retention(i, configured) * i.seconds()) * 1000,
                 );
                 match self
                     .candles
@@ -222,6 +264,92 @@ impl Store {
             }
             Err(e) => {
                 tracing::error!("Error getting candles: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Up to `limit` candles starting at or before `end` (Unix seconds),
+    /// oldest first.
+    pub async fn bars(
+        &self,
+        symbol: &str,
+        exchange: &str,
+        interval: &str,
+        end: i64,
+        limit: i64,
+    ) -> Vec<Bar> {
+        let r = self
+            .candles
+            .find(doc! {"symbol": symbol, "exchange": exchange, "interval": interval,
+                        "timestamp": {"$lte": BsonDateTime::from_millis(end * 1000)}})
+            .projection(doc! {"_id": 0, "timestamp": 1, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1})
+            .sort(doc! {"timestamp": -1})
+            .limit(limit)
+            .await;
+        match r {
+            Ok(cur) => {
+                let docs: Vec<Document> = cur.try_collect().await.unwrap_or_default();
+                let mut v: Vec<Bar> = docs.iter().filter_map(bar_of).collect();
+                v.reverse();
+                v
+            }
+            Err(e) => {
+                tracing::error!("Error getting candles: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Store candles fetched from an exchange where we have none (candles
+    /// we built ourselves win).
+    pub async fn insert_missing(
+        &self,
+        symbol: &str,
+        exchange: &str,
+        interval: Interval,
+        bars: &[Bar],
+    ) {
+        let results: Vec<_> = stream::iter(bars.iter().copied())
+            .map(|b| async move {
+                let ts = BsonDateTime::from_millis(b.start * 1000);
+                self.candles
+                    .update_one(
+                        doc! {"symbol": symbol, "exchange": exchange, "interval": interval.as_str(), "timestamp": ts},
+                        doc! {"$setOnInsert": {"symbol": symbol, "exchange": exchange, "interval": interval.as_str(),
+                              "open": b.open, "high": b.high, "low": b.low, "close": b.close,
+                              "timestamp": ts, "volume": b.volume}},
+                    )
+                    .upsert(true)
+                    .await
+            })
+            .buffer_unordered(WRITE_CONCURRENCY)
+            .collect()
+            .await;
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            tracing::warn!("Storing backfilled candles for {exchange} {symbol}: {e}");
+        }
+    }
+
+    /// Newest detected alerts without their candle snapshots.
+    pub async fn recent_detected(&self, limit: i64) -> Vec<Value> {
+        match self
+            .detected
+            .find(doc! {})
+            .projection(doc! {"_id": 0, "candles": 0})
+            .sort(doc! {"timestamp": -1})
+            .limit(limit)
+            .await
+        {
+            Ok(cur) => cur
+                .try_collect::<Vec<Document>>()
+                .await
+                .unwrap_or_default()
+                .iter()
+                .map(to_json)
+                .collect(),
+            Err(e) => {
+                tracing::error!("Error getting detected alerts: {e}");
                 Vec::new()
             }
         }

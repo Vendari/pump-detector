@@ -3,127 +3,501 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>Pump Detector Prices</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="dark light">
+<title>Trigger prices</title>
 <style>
   :root {
-    --bg: #0f1216;
-    --panel: #171b21;
-    --panel-2: #1e232b;
-    --border: #2a313b;
-    --text: #e3e7ec;
-    --muted: #8b95a3;
-    --accent: #4c9aff;
-    --up: #26a69a;
-    --down: #ef5350;
-    --warn: #e0a83a;
+    --bg: #0b0e12;
+    --surface: #12161c;
+    --surface-2: #171c23;
+    --surface-3: #1e242d;
+    --border: #232a34;
+    --border-strong: #2f3844;
+    --text: #e6eaf0;
+    --text-2: #aab3c0;
+    --muted: #747f8d;
+    --accent: #5b9cff;
+    --accent-soft: rgba(91, 156, 255, 0.14);
+    --ok: #34c08f;
+    --ok-soft: rgba(52, 192, 143, 0.14);
+    --warn: #f0b43c;
+    --warn-soft: rgba(240, 180, 60, 0.14);
+    --bad: #f2575c;
+    --bad-soft: rgba(242, 87, 92, 0.14);
+    --flash-up: rgba(52, 192, 143, 0.28);
+    --flash-down: rgba(242, 87, 92, 0.28);
+    --row-hover: rgba(255, 255, 255, 0.035);
+    --row-selected: rgba(91, 156, 255, 0.12);
+    --chart-grid: #1b2129;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --radius: 10px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f3f5f8;
+      --surface: #ffffff;
+      --surface-2: #f8f9fb;
+      --surface-3: #eef1f5;
+      --border: #e2e6ec;
+      --border-strong: #ccd3dc;
+      --text: #121821;
+      --text-2: #485261;
+      --muted: #6a7583;
+      --accent: #2563eb;
+      --accent-soft: rgba(37, 99, 235, 0.1);
+      --ok: #0e9467;
+      --ok-soft: rgba(14, 148, 103, 0.1);
+      --warn: #b26b00;
+      --warn-soft: rgba(178, 107, 0, 0.1);
+      --bad: #d6363c;
+      --bad-soft: rgba(214, 54, 60, 0.1);
+      --flash-up: rgba(14, 148, 103, 0.2);
+      --flash-down: rgba(214, 54, 60, 0.2);
+      --row-hover: rgba(0, 0, 0, 0.03);
+      --row-selected: rgba(37, 99, 235, 0.08);
+      --chart-grid: #eef1f5;
+      --shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+    }
+  }
+
   * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
   html, body { margin: 0; background: var(--bg); color: var(--text); }
-  body {
-    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    overflow-x: hidden;
+  body { font: 14px/1.45 var(--font); overflow-x: hidden; }
+  button, input, select { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
   }
-  main { max-width: 1100px; margin: 0 auto; padding: 12px 16px 32px; }
-  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 12px; }
-  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .num, .tnum { font-variant-numeric: tabular-nums; }
   .muted { color: var(--muted); }
-  .small { font-size: 12px; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
-  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-  label.field { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); flex: 1 1 160px; min-width: 0; }
-  input, select, button {
-    font: inherit; color: var(--text); background: var(--panel-2);
-    border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; min-width: 0;
+
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 0 20px 32px; }
+
+  /* ---------- Header ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    -webkit-backdrop-filter: saturate(140%) blur(10px);
+    backdrop-filter: saturate(140%) blur(10px);
+    border-bottom: 1px solid var(--border);
   }
-  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
-  button { cursor: pointer; }
-  button:hover { border-color: var(--accent); }
-  .status { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin: 4px 0 8px; font-size: 12px; color: var(--muted); }
-  .status .error { color: var(--down); }
-  .table-wrap { max-height: 65vh; overflow: auto; -webkit-overflow-scrolling: touch; }
-  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { padding: 7px 10px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border); }
-  th { position: sticky; top: 0; background: var(--panel-2); font-weight: 600; font-size: 12px; color: var(--muted); z-index: 1; }
-  th.sortable { cursor: pointer; user-select: none; }
-  th.sortable:hover { color: var(--text); }
-  td.num, th.num { text-align: right; }
+  .topbar-inner {
+    max-width: 1440px; margin: 0 auto; padding: 10px 20px;
+    display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .logo {
+    width: 26px; height: 26px; border-radius: 7px; flex: none;
+    background: linear-gradient(135deg, var(--accent), var(--ok));
+    display: grid; place-items: center;
+  }
+  .logo svg { width: 16px; height: 16px; color: #fff; }
+  h1 { font-size: 16px; font-weight: 650; margin: 0; letter-spacing: -0.01em; white-space: nowrap; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; line-height: 1; padding: 5px 8px; border-radius: 999px;
+    background: var(--surface-3); color: var(--text-2); white-space: nowrap;
+  }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+  .live-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+  .live-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+  .live-dot.bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+  .header-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .spacer { flex: 1 1 auto; }
+
+  .stats {
+    display: grid; gap: 1px; margin: 16px 0 0;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    background: var(--border); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; box-shadow: var(--shadow);
+  }
+  .stat { background: var(--surface); padding: 10px 14px; min-width: 0; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat .v small { font-size: 12px; font-weight: 500; color: var(--muted); }
+
+  /* ---------- Sections ---------- */
+  .section-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+    margin: 22px 0 10px;
+  }
+  h2 { font-size: 13px; font-weight: 650; margin: 0; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-2); }
+  .section-note { font-size: 12px; color: var(--muted); }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); min-width: 0;
+  }
+  .inline-msg {
+    display: flex; gap: 8px; align-items: flex-start;
+    font-size: 13px; padding: 10px 12px; border-radius: 8px;
+    background: var(--warn-soft); color: var(--text);
+    border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  }
+  #health-msg { margin-bottom: 10px; }
+  .inline-msg.bad { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+  .inline-msg::before {
+    content: ""; flex: none; width: 6px; height: 6px; margin-top: 7px; border-radius: 50%; background: var(--warn);
+  }
+  .inline-msg.bad::before { background: var(--bad); }
+  [hidden] { display: none !important; }
+
+  /* ---------- Exchange health ---------- */
+  .health { display: grid; gap: 10px; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .ex-card {
+    position: relative; text-align: left; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px 12px 10px 14px; box-shadow: var(--shadow); min-width: 0; overflow: hidden;
+    transition: border-color 0.15s, background-color 0.15s;
+  }
+  .ex-card::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--muted);
+  }
+  .ex-card[data-status="healthy"]::before { background: var(--ok); }
+  .ex-card[data-status="partial"]::before, .ex-card[data-status="stale"]::before { background: var(--warn); }
+  .ex-card[data-status="down"]::before { background: var(--bad); }
+  .ex-card:hover { border-color: var(--border-strong); }
+  .ex-card[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+  .ex-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .ex-name { font-weight: 650; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status-badge {
+    font-size: 11px; font-weight: 600; padding: 3px 7px; border-radius: 999px; white-space: nowrap;
+    background: var(--surface-3); color: var(--text-2);
+  }
+  .status-badge.healthy { background: var(--ok-soft); color: var(--ok); }
+  .status-badge.partial, .status-badge.stale { background: var(--warn-soft); color: var(--warn); }
+  .status-badge.down { background: var(--bad-soft); color: var(--bad); }
+  .ex-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
+  .ex-metrics .k { display: block; font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+  .ex-metrics .v { display: block; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ex-metrics .v.warn { color: var(--warn); }
+  .ex-metrics .v.bad { color: var(--bad); }
+  .bar { height: 3px; border-radius: 3px; background: var(--surface-3); margin-top: 10px; overflow: hidden; }
+  .bar > span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+  .ex-tags { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+  .tag {
+    font-size: 10.5px; padding: 2px 6px; border-radius: 5px; border: 1px solid var(--border);
+    color: var(--muted); white-space: nowrap;
+  }
+  .tag.on { color: var(--text-2); border-color: var(--border-strong); background: var(--surface-3); }
+  .tag.on::before { content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--ok); margin-right: 4px; vertical-align: 1px; }
+  .health-skel { height: 118px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); }
+
+  /* ---------- Layout ---------- */
+  .layout {
+    display: grid; gap: 0 20px;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    grid-template-areas: "markets chart" "markets alerts";
+    align-items: start;
+  }
+  .area-markets { grid-area: markets; min-width: 0; }
+  .area-chart { grid-area: chart; min-width: 0; scroll-margin-top: 56px; }
+  .area-alerts { grid-area: alerts; min-width: 0; }
+
+  /* ---------- Markets ---------- */
+  .toolbar { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .search { position: relative; flex: 1 1 200px; min-width: 0; }
+  .search svg { position: absolute; left: 10px; top: 50%; width: 15px; height: 15px; margin-top: -7.5px; color: var(--muted); pointer-events: none; }
+  .control {
+    width: 100%; min-width: 0; height: 34px; padding: 0 10px;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+  }
+  .control:hover { border-color: var(--border-strong); }
+  .control:focus-visible, .control:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .search .control { padding-left: 32px; }
+  .search kbd {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    font: 11px var(--mono); color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+  }
+  .select-wrap { flex: 0 1 180px; min-width: 0; }
+  select.control { appearance: none; -webkit-appearance: none; padding-right: 28px;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: calc(100% - 15px) 15px, calc(100% - 10px) 15px; background-size: 5px 5px; background-repeat: no-repeat; }
+  .table-meta { display: flex; justify-content: space-between; gap: 4px 12px; flex-wrap: wrap; padding: 8px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); }
+  .table-meta .err { color: var(--bad); }
+  .table-wrap { max-height: min(68vh, 760px); overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; font-variant-numeric: tabular-nums; }
+  th, td { padding: 0 12px; height: 36px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border); }
+  thead th {
+    position: sticky; top: 0; z-index: 2; height: 34px;
+    background: var(--surface-2); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+  }
+  th.num, td.num { text-align: right; }
+  .sort-btn {
+    all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+    font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit; border-radius: 4px;
+  }
+  .sort-btn:hover { color: var(--text); }
+  .sort-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .sort-btn svg { width: 10px; height: 10px; opacity: 0.35; }
+  th[aria-sort] .sort-btn { color: var(--text); }
+  th[aria-sort] .sort-btn svg { opacity: 1; }
+  th[aria-sort="descending"] .sort-btn svg { transform: rotate(180deg); }
   tbody tr { cursor: pointer; }
-  tbody tr:hover { background: var(--panel-2); }
-  tbody tr.selected { background: #22324a; }
-  .stale { color: var(--warn); }
-  .empty { padding: 24px; text-align: center; color: var(--muted); }
-  #chart-panel { display: none; padding: 12px; margin-bottom: 12px; }
-  #chart-panel.open { display: block; }
-  .chart-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-  .chart-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
-  .chart-title strong { font-size: 16px; }
-  .live-price { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .chart-tools { display: flex; gap: 8px; align-items: center; }
+  tbody tr:hover td { background: var(--row-hover); }
+  tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  tbody tr.selected td { background: var(--row-selected); }
+  tbody tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  td.sym { font-weight: 600; }
+  td.sym .base { color: var(--text); }
+  td.sym .quote { color: var(--muted); font-weight: 500; }
+  td.ex { color: var(--text-2); }
+  .ex-chip { display: inline-flex; align-items: center; gap: 6px; }
+  .ex-chip i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; background: var(--muted); }
+  td.px { font-weight: 600; }
+  td.mark { color: var(--text-2); }
+  .pos { color: var(--ok); }
+  .neg { color: var(--bad); }
+  .warn-text { color: var(--warn); }
+  td.age.stale { color: var(--warn); font-weight: 600; }
+  td.age.dead { color: var(--bad); font-weight: 600; }
+  /* sticky symbol column so narrow screens keep context while scrolling sideways */
+  td.sym, thead th:first-child { position: sticky; left: 0; }
+  td.sym { background: var(--surface); z-index: 1; }
+  thead th:first-child { z-index: 3; }
+  .empty { padding: 36px 16px; text-align: center; color: var(--muted); white-space: normal; height: auto; cursor: default; }
+  tr.empty-row:hover td { background: none; }
+
+  @keyframes flashUp { from { background-color: var(--flash-up); } to { background-color: transparent; } }
+  @keyframes flashDown { from { background-color: var(--flash-down); } to { background-color: transparent; } }
+  td.flash-up { animation: flashUp 1.1s ease-out; }
+  td.flash-down { animation: flashDown 1.1s ease-out; }
+  @media (prefers-reduced-motion: reduce) {
+    td.flash-up, td.flash-down { animation: none; }
+    td.flash-up { color: var(--ok); }
+    td.flash-down { color: var(--bad); }
+    * { scroll-behavior: auto !important; transition: none !important; }
+  }
+
+  /* ---------- Chart ---------- */
+  .chart-card { overflow: hidden; }
+  .chart-empty { padding: 48px 20px; text-align: center; color: var(--muted); }
+  .chart-empty strong { display: block; color: var(--text-2); font-weight: 600; margin-bottom: 4px; }
+  .chart-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 12px 14px 8px; }
+  .chart-id { min-width: 0; }
+  .chart-sym { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .chart-prices { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .chart-prices .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; display: block; }
+  .chart-prices .v { font-size: 15px; font-weight: 600; }
+  .chart-prices .v.big { font-size: 20px; }
+  .icon-btn {
+    flex: none; width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center;
+    background: transparent; border: 1px solid var(--border); color: var(--text-2); cursor: pointer;
+  }
+  .icon-btn:hover { background: var(--surface-3); color: var(--text); }
+  .icon-btn svg { width: 16px; height: 16px; }
+  .intervals {
+    display: flex; gap: 2px; padding: 0 14px 10px; overflow-x: auto; scrollbar-width: none;
+  }
+  .intervals::-webkit-scrollbar { display: none; }
+  .iv {
+    flex: none; border: 0; background: transparent; color: var(--muted); cursor: pointer;
+    font-size: 12px; font-weight: 600; padding: 5px 8px; border-radius: 6px; font-variant-numeric: tabular-nums;
+  }
+  .iv:hover { color: var(--text); background: var(--surface-3); }
+  .iv[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+  .chart-box { position: relative; border-top: 1px solid var(--border); }
   #chart { width: 100%; height: 380px; }
-  #chart-msg { padding: 24px 8px; text-align: center; color: var(--muted); display: none; }
-  @media (max-width: 600px) {
-    main { padding: 10px 12px 24px; }
-    th, td { padding: 6px 8px; }
+  .legend {
+    position: absolute; left: 10px; right: 90px; top: 8px; z-index: 3; pointer-events: none;
+    font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums;
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  .legend b { color: var(--muted); font-weight: 500; margin-right: 2px; }
+  .chart-msg { padding: 40px 20px; text-align: center; color: var(--muted); }
+  .chart-foot { display: flex; justify-content: space-between; gap: 4px 12px; flex-wrap: wrap; padding: 8px 14px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); }
+
+  /* ---------- Alerts ---------- */
+  .alerts { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto; }
+  .alert-item { border-bottom: 1px solid var(--border); }
+  .alert-item:last-child { border-bottom: 0; }
+  .alert-btn {
+    all: unset; box-sizing: border-box; width: 100%; cursor: pointer;
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px;
+    padding: 9px 14px;
+  }
+  .alert-btn:hover { background: var(--row-hover); }
+  .alert-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .alert-kind {
+    width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center;
+  }
+  .alert-kind svg { width: 14px; height: 14px; }
+  .alert-kind.spike { background: var(--ok-soft); color: var(--ok); }
+  .alert-kind.drop { background: var(--bad-soft); color: var(--bad); }
+  .alert-main { min-width: 0; }
+  .alert-title, .alert-sub, .alert-chg, .alert-when { display: block; }
+  .alert-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .alert-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .alert-right { text-align: right; font-variant-numeric: tabular-nums; }
+  .alert-chg { font-weight: 700; }
+  .alert-when { font-size: 12px; color: var(--muted); }
+  .alerts-empty { padding: 28px 16px; text-align: center; color: var(--muted); }
+  .card-pad { padding: 12px; }
+
+  footer { margin-top: 28px; font-size: 12px; color: var(--muted); text-align: center; }
+
+  /* ---------- Responsive ---------- */
+  @media (max-width: 1280px) {
+    .health { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+  @media (max-width: 1100px) {
+    .layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "chart" "markets" "alerts"; }
+    .area-chart.closed { display: none; }
+    .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+  @media (max-width: 640px) {
+    .wrap { padding: 0 12px 24px; }
+    .topbar-inner { padding: 10px 12px; }
+    .health { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .ex-card { padding: 10px 10px 9px 12px; }
+    .ex-metrics { gap: 4px; }
+    .ex-metrics .k { font-size: 10px; }
+    .ex-metrics .v { font-size: 12.5px; }
+    .ex-metrics .of { display: none; }
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stat { padding: 8px 12px; }
+    .stat .v { font-size: 16px; }
+    th, td { padding: 0 9px; height: 38px; }
+    .table-wrap { max-height: 62vh; }
     #chart { height: 300px; }
-    .live-price { font-size: 18px; }
+    .search kbd { display: none; }
+    .select-wrap { flex: 1 1 120px; }
+    .uptime-label { display: none; }
   }
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <h1>Pump Detector prices</h1>
-    <span class="muted small">Prices refresh every 2 s. Click a row to open its chart.</span>
-  </header>
-
-  <section id="chart-panel" class="panel" aria-live="polite">
-    <div class="chart-head">
-      <div class="chart-title">
-        <strong id="chart-symbol"></strong>
-        <span class="muted" id="chart-exchange"></span>
-        <span class="live-price" id="chart-price">-</span>
-        <span class="muted small" id="chart-age"></span>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11l4-4 3 3 5-6"/></svg>
       </div>
-      <div class="chart-tools">
-        <label class="muted small" for="interval">Interval</label>
-        <select id="interval"></select>
-        <button type="button" id="chart-close">Close</button>
-      </div>
+      <h1>Trigger prices</h1>
     </div>
-    <div id="chart"></div>
-    <div id="chart-msg"></div>
-    <div class="muted small" id="chart-status"></div>
+    <div class="header-meta">
+      <span class="pill tnum" id="version" title="Service version" hidden>v-</span>
+      <span class="pill tnum" id="uptime" title="Uptime" hidden><span class="uptime-label">Up</span> <span id="uptime-v">-</span></span>
+    </div>
+    <span class="spacer"></span>
+    <span class="pill" id="live" role="status" aria-live="polite"><span class="live-dot" id="live-dot"></span><span id="live-text">Connecting</span></span>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="stats" id="stats" aria-label="Service counters" hidden>
+    <div class="stat"><div class="k">Updates / s</div><div class="v" id="s-ups">-</div></div>
+    <div class="stat"><div class="k">Total updates</div><div class="v" id="s-total">-</div></div>
+    <div class="stat"><div class="k">Candles created</div><div class="v" id="s-candles">-</div></div>
+    <div class="stat"><div class="k">Alerts sent</div><div class="v" id="s-alerts">-</div></div>
+    <div class="stat"><div class="k">Trailing open / closed</div><div class="v" id="s-trailing">-</div></div>
+    <div class="stat"><div class="k">Stream clients</div><div class="v" id="s-clients">-</div></div>
+  </div>
+
+  <section aria-labelledby="health-h">
+    <div class="section-head">
+      <h2 id="health-h">Exchange feeds</h2>
+      <span class="section-note" id="health-summary">Loading</span>
+    </div>
+    <div class="inline-msg" id="health-msg" hidden></div>
+    <div class="health" id="health">
+      <div class="health-skel"></div><div class="health-skel"></div><div class="health-skel"></div>
+      <div class="health-skel"></div><div class="health-skel"></div><div class="health-skel"></div>
+    </div>
   </section>
 
-  <div class="controls">
-    <label class="field">Search symbol
-      <input id="search" type="search" placeholder="e.g. BTC" autocomplete="off" autocapitalize="characters" spellcheck="false">
-    </label>
-    <label class="field">Exchange
-      <select id="exchange-filter"><option value="">All exchanges</option></select>
-    </label>
+  <div class="layout">
+    <section class="area-chart closed" id="chart-area" aria-labelledby="chart-h">
+      <div class="section-head"><h2 id="chart-h">Chart</h2><span class="section-note">Times in UTC</span></div>
+      <div class="card chart-card">
+        <div class="chart-empty" id="chart-empty">
+          <strong>No market selected</strong>
+          Pick a row in the markets table or an alert to open its candle chart.
+        </div>
+        <div id="chart-panel" hidden>
+          <div class="chart-head">
+            <div class="chart-id">
+              <div class="chart-sym"><span id="c-symbol"></span><span class="pill" id="c-exchange"></span></div>
+              <div class="chart-prices">
+                <div><span class="k">Last</span><span class="v big" id="c-last">-</span></div>
+                <div><span class="k">Mark</span><span class="v" id="c-mark">-</span></div>
+                <div><span class="k">Spread</span><span class="v" id="c-spread">-</span></div>
+                <div><span class="k">Age</span><span class="v" id="c-age">-</span></div>
+              </div>
+            </div>
+            <button type="button" class="icon-btn" id="chart-close" aria-label="Close chart">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+            </button>
+          </div>
+          <div class="intervals" id="intervals" role="group" aria-label="Candle interval"></div>
+          <div class="chart-box">
+            <div class="legend" id="legend" aria-hidden="true"></div>
+            <div id="chart"></div>
+            <div class="chart-msg" id="chart-msg" hidden></div>
+          </div>
+          <div class="chart-foot"><span id="chart-status">Loading candles</span><span id="chart-updated"></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="area-markets" aria-labelledby="markets-h">
+      <div class="section-head">
+        <h2 id="markets-h">Markets</h2>
+        <span class="section-note" id="markets-note"></span>
+      </div>
+      <div class="card">
+        <div class="toolbar">
+          <div class="search">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+            <label for="search" class="sr-only">Search symbol</label>
+            <input id="search" class="control" type="search" placeholder="Search symbol" autocomplete="off" autocapitalize="characters" spellcheck="false">
+            <kbd aria-hidden="true">/</kbd>
+          </div>
+          <div class="select-wrap">
+            <label for="exchange-filter" class="sr-only">Exchange</label>
+            <select id="exchange-filter" class="control"><option value="">All exchanges</option></select>
+          </div>
+        </div>
+        <div class="table-meta" aria-live="polite">
+          <span id="count">Loading prices</span>
+          <span id="updated"></span>
+        </div>
+        <div class="table-wrap" id="table-wrap">
+          <table>
+            <caption class="sr-only">Live prices. Select a row to open its chart.</caption>
+            <thead>
+              <tr>
+                <th data-key="symbol"><button type="button" class="sort-btn" data-key="symbol">Symbol<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2l4 6H1z" fill="currentColor"/></svg></button></th>
+                <th data-key="exchange"><button type="button" class="sort-btn" data-key="exchange">Exchange<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2l4 6H1z" fill="currentColor"/></svg></button></th>
+                <th class="num" data-key="price"><button type="button" class="sort-btn" data-key="price">Last<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2l4 6H1z" fill="currentColor"/></svg></button></th>
+                <th class="num">Mark</th>
+                <th class="num" data-key="spread"><button type="button" class="sort-btn" data-key="spread">Spread<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2l4 6H1z" fill="currentColor"/></svg></button></th>
+                <th class="num" data-key="age_seconds"><button type="button" class="sort-btn" data-key="age_seconds">Age<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2l4 6H1z" fill="currentColor"/></svg></button></th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="area-alerts" aria-labelledby="alerts-h">
+      <div class="section-head">
+        <h2 id="alerts-h">Recent alerts</h2>
+        <span class="section-note" id="alerts-note"></span>
+      </div>
+      <div class="card">
+        <ul class="alerts" id="alerts"><li class="alerts-empty">Loading alerts</li></ul>
+      </div>
+    </section>
   </div>
 
-  <div class="status">
-    <span id="count">Loading prices...</span>
-    <span id="updated"></span>
-  </div>
-
-  <div class="panel table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th class="sortable" data-key="symbol">Symbol</th>
-          <th class="sortable" data-key="exchange">Exchange</th>
-          <th class="sortable num" data-key="price">Price</th>
-          <th class="sortable num" data-key="age_seconds">Last update</th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
-  </div>
-</main>
+  <footer>Prices every 2 s, feed health every 3 s, open chart every 5 s. Stale means no tick for more than 10 s.</footer>
+</div>
 
 <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <script>
@@ -131,74 +505,327 @@
   "use strict";
 
   var MAX_ROWS = 300;
+  var STALE_S = 10;
   var PRICE_POLL_MS = 2000;
+  var OVERVIEW_POLL_MS = 3000;
   var CANDLE_POLL_MS = 5000;
+  var ALERTS_POLL_MS = 15000;
+  var CANDLE_LIMIT = 300;
+  var DEFAULT_INTERVALS = ["10s", "30s", "1m", "2m", "3m", "4m", "5m", "10m", "15m", "30m", "1h", "3h", "6h", "12h", "1D", "1W"];
+  var EX_LABELS = {
+    binance_futures: "Binance", gate_futures: "Gate", bybit_futures: "Bybit",
+    kucoin_futures: "KuCoin", aster_futures: "Aster", hyperliquid: "Hyperliquid"
+  };
+  var EX_ORDER = ["binance_futures", "bybit_futures", "gate_futures", "kucoin_futures", "aster_futures", "hyperliquid"];
 
   var state = {
     prices: [],
-    candleExchanges: [],
+    prevPrice: Object.create(null),
+    flash: Object.create(null),
+    overview: null,
+    exchangeNames: [],
+    candleExchanges: null,   // null = unknown
+    intervals: DEFAULT_INTERVALS.slice(),
     sortKey: "symbol",
     sortDir: 1,
-    selected: null,   // {symbol, exchange}
+    selected: null,
     interval: "1m",
-    fitNext: true
+    fitNext: true,
+    errors: { prices: null, overview: null }
   };
 
-  var el = function (id) { return document.getElementById(id); };
-  var rowsEl = el("rows");
-  var searchEl = el("search");
-  var exFilterEl = el("exchange-filter");
-  var intervalEl = el("interval");
+  var $ = function (id) { return document.getElementById(id); };
+  var rowsEl = $("rows");
+  var searchEl = $("search");
+  var exFilterEl = $("exchange-filter");
+
+  // ---------- Formatting ----------
 
   function esc(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
+  function exLabel(name) {
+    if (EX_LABELS[name]) return EX_LABELS[name];
+    var s = String(name || "").replace(/_futures$/, "");
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+  function isNum(v) { return typeof v === "number" && isFinite(v); }
 
   function decimalsFor(p) {
     var a = Math.abs(p);
-    if (a >= 1000) return 2;
-    if (a >= 1) return 4;
     if (a === 0) return 2;
-    // Keep about 5 significant digits for small prices.
-    return Math.min(10, Math.max(4, 4 - Math.floor(Math.log10(a))));
+    if (a >= 1000) return 2;
+    if (a >= 100) return 3;
+    if (a >= 1) return 4;
+    // about 4 significant digits for small prices: 0.00001234
+    return Math.min(12, 3 - Math.floor(Math.log10(a)));
   }
-
+  var nfCache = {};
   function fmtPrice(p) {
-    if (typeof p !== "number" || !isFinite(p)) return "-";
-    return p.toFixed(decimalsFor(p));
+    if (!isNum(p)) return "-";
+    var d = decimalsFor(p);
+    var nf = nfCache[d] || (nfCache[d] = new Intl.NumberFormat("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }));
+    return nf.format(p);
+  }
+  var compactNf = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+  var intNf = new Intl.NumberFormat("en-US");
+  function fmtCompact(n) { return isNum(n) ? (Math.abs(n) < 10000 ? intNf.format(n) : compactNf.format(n)) : "-"; }
+  function fmtAge(s) {
+    if (!isNum(s)) return "-";
+    if (s < 10) return s.toFixed(1) + "s";
+    if (s < 60) return Math.round(s) + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m";
+    if (s < 86400) return Math.floor(s / 3600) + "h";
+    return Math.floor(s / 86400) + "d";
+  }
+  function fmtUptime(s) {
+    if (!isNum(s)) return "-";
+    s = Math.floor(s);
+    var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    if (d) return d + "d " + h + "h";
+    if (h) return h + "h " + m + "m";
+    return m + "m " + (s % 60) + "s";
+  }
+  function fmtPct(v, digits) {
+    if (!isNum(v)) return "-";
+    return (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(digits) + "%";
+  }
+  function spreadOf(r) {
+    var last = isNum(r.last) ? r.last : r.price;
+    if (!isNum(r.mark) || !isNum(last) || last === 0) return null;
+    return (r.mark - last) / last * 100;
+  }
+  function splitSymbol(sym) {
+    var m = /^(.+?)(USDT|USDC|USD|PERP)$/.exec(sym);
+    return m ? [m[1], m[2]] : [sym, ""];
+  }
+  function timeAgo(ms) {
+    var s = Math.max(0, (Date.now() - ms) / 1000);
+    if (s < 60) return Math.floor(s) + "s ago";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    return Math.floor(s / 86400) + "d ago";
   }
 
-  function fmtAge(s) {
-    if (typeof s !== "number" || !isFinite(s)) return "-";
-    if (s < 60) return s.toFixed(s < 10 ? 1 : 0) + " s ago";
-    if (s < 3600) return Math.floor(s / 60) + " min ago";
-    if (s < 86400) return Math.floor(s / 3600) + " h ago";
-    return Math.floor(s / 86400) + " d ago";
-  }
+  // ---------- Fetch ----------
 
   async function getJSON(url) {
-    var res = await fetch(url, { credentials: "same-origin", cache: "no-store" });
-    if (res.status === 401) throw new Error("Not signed in. Reload the page to sign in again.");
-    if (!res.ok) throw new Error("Request failed (" + res.status + ")");
-    return res.json();
-  }
-
-  // ---------- Price table ----------
-
-  function addExchangeOption(name) {
-    for (var i = 0; i < exFilterEl.options.length; i++) {
-      if (exFilterEl.options[i].value === name) return;
+    var res;
+    try {
+      res = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+    } catch (e) {
+      throw new Error("Network error, the service may be unreachable.");
     }
-    var opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    exFilterEl.appendChild(opt);
+    if (res.status === 401) throw new Error("Not signed in. Reload the page to sign in again.");
+    if (res.status === 404) { var e404 = new Error("Not available on this server version (404)."); e404.status = 404; throw e404; }
+    if (!res.ok) throw new Error("Request failed (" + res.status + ").");
+    try { return await res.json(); } catch (e) { throw new Error("Unexpected response from the server."); }
   }
+
+  function poller(fn, ms, onlyVisible) {
+    var t = null, running = false;
+    async function tick() {
+      clearTimeout(t);
+      if (running) return;
+      if (onlyVisible && document.hidden) { t = null; return; }
+      running = true;
+      try { await fn(); } finally { running = false; t = setTimeout(tick, ms); }
+    }
+    if (onlyVisible) {
+      document.addEventListener("visibilitychange", function () { if (!document.hidden) tick(); });
+    }
+    return tick;
+  }
+
+  function preserveFocus(container, attr, render) {
+    var a = document.activeElement;
+    var key = a && container.contains(a) ? a.getAttribute(attr) : null;
+    render();
+    if (key != null) {
+      var n = container.querySelector("[" + attr + '="' + CSS.escape(key) + '"]');
+      if (n) n.focus({ preventScroll: true });
+    }
+  }
+
+  // ---------- Live indicator ----------
+
+  function updateLive() {
+    var dot = $("live-dot"), txt = $("live-text");
+    var e = state.errors;
+    dot.className = "live-dot";
+    if (e.prices && e.overview) { dot.classList.add("bad"); txt.textContent = "Offline"; }
+    else if (e.prices) { dot.classList.add("warn"); txt.textContent = "Prices unavailable"; }
+    else if (document.hidden) { txt.textContent = "Paused"; }
+    else if (state.prices.length) { dot.classList.add("ok"); txt.textContent = "Live"; }
+    else { txt.textContent = "Connecting"; }
+  }
+
+  // ---------- Overview / health ----------
+
+  function exStatus(x) {
+    var total = isNum(x.connections) ? x.connections : null;
+    var up = isNum(x.connections_up) ? x.connections_up : null;
+    if (x.connected === false || up === 0) return "down";
+    if (total != null && up != null && up < total) return "partial";
+    if (isNum(x.last_tick_age_seconds) && x.last_tick_age_seconds > STALE_S) return "stale";
+    return "healthy";
+  }
+  var STATUS_TEXT = { healthy: "Healthy", partial: "Partial", stale: "Stale", down: "Down", unknown: "Unknown" };
+
+  function exchangesFromPrices() {
+    var by = Object.create(null);
+    state.prices.forEach(function (r) {
+      var b = by[r.exchange] || (by[r.exchange] = { name: r.exchange, markets: 0, priced_markets: 0, last_tick_age_seconds: Infinity });
+      b.markets++; b.priced_markets++;
+      if (isNum(r.age_seconds) && r.age_seconds < b.last_tick_age_seconds) b.last_tick_age_seconds = r.age_seconds;
+    });
+    state.exchangeNames.forEach(function (n) {
+      if (!by[n]) by[n] = { name: n, markets: 0, priced_markets: 0, last_tick_age_seconds: null };
+    });
+    return Object.keys(by).map(function (k) {
+      var b = by[k];
+      if (b.last_tick_age_seconds === Infinity) b.last_tick_age_seconds = null;
+      b.derived = true;
+      if (state.candleExchanges) b.candles = state.candleExchanges.indexOf(k) !== -1;
+      return b;
+    });
+  }
+
+  function sortExchanges(list) {
+    return list.slice().sort(function (a, b) {
+      var ia = EX_ORDER.indexOf(a.name), ib = EX_ORDER.indexOf(b.name);
+      if (ia === -1) ia = 99; if (ib === -1) ib = 99;
+      return ia - ib || String(a.name).localeCompare(b.name);
+    });
+  }
+
+  function renderHealth() {
+    var ov = state.overview;
+    var list = ov && Array.isArray(ov.exchanges) ? ov.exchanges : null;
+    var derived = false;
+    if (!list) {
+      if (!state.prices.length && !state.exchangeNames.length) return;
+      list = exchangesFromPrices(); derived = true;
+    }
+    list = sortExchanges(list);
+    var counts = { healthy: 0, partial: 0, stale: 0, down: 0 };
+    var filter = exFilterEl.value;
+    var html = list.map(function (x) {
+      var st;
+      if (derived) {
+        st = !isNum(x.last_tick_age_seconds) ? "down" : x.last_tick_age_seconds > STALE_S ? "stale" : "healthy";
+      } else st = exStatus(x);
+      counts[st] = (counts[st] || 0) + 1;
+      var age = x.last_tick_age_seconds;
+      var ageCls = !isNum(age) ? "" : age > 60 ? " bad" : age > STALE_S ? " warn" : "";
+      var markets = isNum(x.markets) ? x.markets : null;
+      var priced = isNum(x.priced_markets) ? x.priced_markets : null;
+      var cov = markets ? Math.max(0, Math.min(100, (priced || 0) / markets * 100)) : 0;
+      var conns = derived || !isNum(x.connections) ? "-" : (isNum(x.connections_up) ? x.connections_up : "?") + "/" + x.connections;
+      var connCls = !derived && isNum(x.connections) && isNum(x.connections_up) && x.connections_up < x.connections ? (x.connections_up === 0 ? " bad" : " warn") : "";
+      var label = x.label || exLabel(x.name);
+      var tags = "";
+      if (typeof x.candles === "boolean") tags += '<span class="tag' + (x.candles ? " on" : "") + '">Candles' + (x.candles ? "" : " off") + "</span>";
+      if (typeof x.alerts === "boolean") tags += '<span class="tag' + (x.alerts ? " on" : "") + '">Alerts' + (x.alerts ? "" : " off") + "</span>";
+      return '<button type="button" class="ex-card" data-ex="' + esc(x.name) + '" data-status="' + st + '" aria-pressed="' + (filter === x.name) + '"' +
+        ' aria-label="' + esc(label + ": " + STATUS_TEXT[st] + ". Filter markets by this exchange") + '">' +
+        '<div class="ex-top"><span class="ex-name">' + esc(label) + '</span><span class="status-badge ' + st + '">' + STATUS_TEXT[st] + "</span></div>" +
+        '<div class="ex-metrics">' +
+          '<div><span class="k">Priced</span><span class="v" title="Markets with a price / markets">' + (priced != null ? intNf.format(priced) : "-") + (markets != null && !derived ? '<span class="muted of">/' + intNf.format(markets) + "</span>" : "") + "</span></div>" +
+          '<div><span class="k">Conns</span><span class="v' + connCls + '">' + conns + "</span></div>" +
+          '<div><span class="k">Last tick</span><span class="v' + ageCls + '">' + fmtAge(age) + "</span></div>" +
+        "</div>" +
+        (derived ? "" : '<div class="bar" aria-hidden="true"><span style="width:' + cov.toFixed(1) + '%"></span></div>') +
+        (tags ? '<div class="ex-tags">' + tags + "</div>" : "") +
+        "</button>";
+    }).join("");
+    var healthEl = $("health");
+    preserveFocus(healthEl, "data-ex", function () { healthEl.innerHTML = html; });
+
+    var parts = [counts.healthy + " of " + list.length + " healthy"];
+    if (counts.partial) parts.push(counts.partial + " partial");
+    if (counts.stale) parts.push(counts.stale + " stale");
+    if (counts.down) parts.push(counts.down + " down");
+    $("health-summary").textContent = parts.join(", ");
+  }
+
+  function renderStats(ov) {
+    $("stats").hidden = false;
+    $("version").hidden = !ov.version;
+    $("uptime").hidden = !isNum(ov.uptime_seconds);
+    $("version").textContent = ov.version ? "v" + ov.version : "";
+    $("uptime-v").textContent = fmtUptime(ov.uptime_seconds);
+    $("s-ups").textContent = isNum(ov.updates_per_second) ? (ov.updates_per_second >= 100 ? Math.round(ov.updates_per_second) : ov.updates_per_second.toFixed(1)) : "-";
+    $("s-total").textContent = fmtCompact(ov.total_updates);
+    $("s-total").title = isNum(ov.total_updates) ? intNf.format(ov.total_updates) : "";
+    $("s-candles").textContent = fmtCompact(ov.candles_created);
+    $("s-candles").title = isNum(ov.candles_created) ? intNf.format(ov.candles_created) : "";
+    $("s-alerts").textContent = fmtCompact(ov.alerts_sent);
+    $("s-trailing").innerHTML = (isNum(ov.trailing_positions) ? ov.trailing_positions : "-") + ' <small>/ ' + (isNum(ov.trailing_closes) ? ov.trailing_closes : "-") + "</small>";
+    $("s-clients").textContent = isNum(ov.stream_clients) ? ov.stream_clients : "-";
+  }
+
+  async function pollOverview() {
+    try {
+      var ov = await getJSON("/ui/api/overview");
+      state.overview = ov;
+      state.errors.overview = null;
+      $("health-msg").hidden = true;
+      renderStats(ov);
+      (ov.exchanges || []).forEach(function (x) {
+        addExchange(x.name);
+        if (typeof x.candles === "boolean") {
+          if (!state.candleExchanges) state.candleExchanges = [];
+          var i = state.candleExchanges.indexOf(x.name);
+          if (x.candles && i === -1) state.candleExchanges.push(x.name);
+          if (!x.candles && i !== -1) state.candleExchanges.splice(i, 1);
+        }
+      });
+    } catch (e) {
+      state.errors.overview = e.message;
+      state.overview = null;
+      $("stats").hidden = true;
+      $("version").hidden = true;
+      $("uptime").hidden = true;
+      var m = $("health-msg");
+      m.hidden = false;
+      m.textContent = "Feed health unavailable: " + e.message + (state.prices.length ? " Cards below are estimated from price data." : "");
+    }
+    renderHealth();
+    updateLive();
+  }
+
+  // ---------- Exchanges / intervals ----------
+
+  function addExchange(name) {
+    if (!name || state.exchangeNames.indexOf(name) !== -1) return;
+    state.exchangeNames.push(name);
+    var sorted = sortExchanges(state.exchangeNames.map(function (n) { return { name: n }; }));
+    var cur = exFilterEl.value;
+    exFilterEl.innerHTML = '<option value="">All exchanges</option>' + sorted.map(function (x) {
+      return '<option value="' + esc(x.name) + '">' + esc(exLabel(x.name)) + "</option>";
+    }).join("");
+    exFilterEl.value = cur;
+  }
+
+  async function loadExchanges() {
+    try {
+      var data = await getJSON("/ui/api/exchanges");
+      if (Array.isArray(data.candle_exchanges)) state.candleExchanges = data.candle_exchanges.slice();
+      (data.exchanges || []).forEach(function (x) { addExchange(x.name); });
+      if (Array.isArray(data.intervals) && data.intervals.length) state.intervals = data.intervals;
+    } catch (e) { /* intervals fall back to defaults; candles endpoint still says if stored */ }
+    renderIntervals();
+  }
+
+  // ---------- Markets table ----------
+
+  function keyOf(r) { return r.exchange + "|" + r.symbol; }
 
   function filteredRows() {
-    var q = searchEl.value.trim().toUpperCase();
+    var q = searchEl.value.trim().toUpperCase().replace(/[\s\/\-_]/g, "");
     var ex = exFilterEl.value;
     var out = [];
     for (var i = 0; i < state.prices.length; i++) {
@@ -209,10 +836,20 @@
     }
     var k = state.sortKey, d = state.sortDir;
     out.sort(function (a, b) {
-      var x = a[k], y = b[k];
-      var c = typeof x === "string" ? x.localeCompare(y) : x - y;
-      if (c === 0 && k !== "symbol") c = a.symbol.localeCompare(b.symbol);
-      if (c === 0) c = a.exchange.localeCompare(b.exchange);
+      var x, y, c;
+      if (k === "symbol" || k === "exchange") {
+        x = k === "exchange" ? exLabel(a.exchange) : a.symbol;
+        y = k === "exchange" ? exLabel(b.exchange) : b.symbol;
+        c = x < y ? -1 : x > y ? 1 : 0;
+      } else {
+        x = k === "spread" ? a._spread : k === "price" ? a._last : a[k];
+        y = k === "spread" ? b._spread : k === "price" ? b._last : b[k];
+        var xn = isNum(x), yn = isNum(y);
+        if (!xn || !yn) return xn === yn ? 0 : xn ? -1 : 1; // missing values last
+        c = x - y;
+      }
+      if (c === 0 && k !== "symbol") c = a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0;
+      if (c === 0) c = a.exchange < b.exchange ? -1 : 1;
       return c * d;
     });
     return out;
@@ -222,148 +859,294 @@
     var rows = filteredRows();
     var shown = rows.length > MAX_ROWS ? rows.slice(0, MAX_ROWS) : rows;
     var sel = state.selected;
+    var flash = state.flash;
     var html = new Array(shown.length);
     for (var i = 0; i < shown.length; i++) {
       var r = shown[i];
+      var k = keyOf(r);
       var isSel = sel && sel.symbol === r.symbol && sel.exchange === r.exchange;
+      var parts = splitSymbol(r.symbol);
+      var sp = r._spread;
+      var spCls = !isNum(sp) ? "muted" : Math.abs(sp) >= 0.5 ? "warn-text" : sp > 0 ? "pos" : sp < 0 ? "neg" : "muted";
+      var age = r.age_seconds;
+      var ageCls = !isNum(age) ? "" : age > 60 ? " dead" : age > STALE_S ? " stale" : "";
+      var fl = flash[k] ? " flash-" + flash[k] : "";
       html[i] =
-        '<tr data-i="' + i + '"' + (isSel ? ' class="selected"' : "") + ">" +
-        "<td>" + esc(r.symbol) + "</td>" +
-        "<td>" + esc(r.exchange) + "</td>" +
-        '<td class="num">' + fmtPrice(r.price) + "</td>" +
-        '<td class="num' + (r.age_seconds > 60 ? " stale" : "") + '">' + fmtAge(r.age_seconds) + "</td>" +
+        '<tr tabindex="0" data-k="' + esc(k) + '"' + (isSel ? ' class="selected" aria-selected="true"' : "") + ">" +
+        '<td class="sym"><span class="base">' + esc(parts[0]) + '</span><span class="quote">' + esc(parts[1]) + "</span></td>" +
+        '<td class="ex">' + esc(exLabel(r.exchange)) + "</td>" +
+        '<td class="num px' + fl + '">' + fmtPrice(r._last) + "</td>" +
+        '<td class="num mark">' + fmtPrice(r.mark) + "</td>" +
+        '<td class="num ' + spCls + '">' + (isNum(sp) ? fmtPct(sp, Math.abs(sp) < 1 ? 3 : 2) : "-") + "</td>" +
+        '<td class="num age' + ageCls + '">' + fmtAge(age) + "</td>" +
         "</tr>";
     }
-    rowsEl.innerHTML = shown.length
-      ? html.join("")
-      : '<tr><td colspan="4" class="empty">' +
-        (state.prices.length ? "No prices match the filter." : "No prices yet.") + "</td></tr>";
-    rowsEl._shown = shown;
+    preserveFocus(rowsEl, "data-k", function () {
+      rowsEl.innerHTML = shown.length ? html.join("")
+        : '<tr class="empty-row"><td colspan="6" class="empty">' +
+          (state.errors.prices && !state.prices.length ? esc(state.errors.prices)
+            : state.prices.length ? "No markets match this search." : "Waiting for prices.") + "</td></tr>";
+    });
 
     var total = state.prices.length;
-    el("count").textContent = rows.length > MAX_ROWS
-      ? "Showing " + MAX_ROWS + " of " + rows.length + " matching (" + total + " total). Narrow the search to see more."
-      : "Showing " + rows.length + " of " + total;
+    $("count").textContent = !total ? (state.errors.prices ? "Prices unavailable" : "Loading prices")
+      : rows.length > MAX_ROWS
+        ? "Showing top " + MAX_ROWS + " of " + intNf.format(rows.length) + " matches. Search to narrow down."
+        : intNf.format(rows.length) + (rows.length === total ? " markets" : " of " + intNf.format(total) + " markets");
+    var stale = 0;
+    for (var j = 0; j < state.prices.length; j++) if (state.prices[j].age_seconds > STALE_S) stale++;
+    $("markets-note").textContent = total ? intNf.format(total) + " priced" + (stale ? ", " + intNf.format(stale) + " stale" : "") : "";
 
-    document.querySelectorAll("th.sortable").forEach(function (th) {
-      var base = th.textContent.replace(/ [▲▼]$/, "");
-      th.textContent = th.dataset.key === state.sortKey ? base + (state.sortDir > 0 ? " ▲" : " ▼") : base;
+    document.querySelectorAll("thead th[data-key]").forEach(function (th) {
+      if (th.dataset.key === state.sortKey) th.setAttribute("aria-sort", state.sortDir > 0 ? "ascending" : "descending");
+      else th.removeAttribute("aria-sort");
     });
   }
 
   async function pollPrices() {
     try {
       var data = await getJSON("/ui/api/prices");
+      if (!Array.isArray(data)) throw new Error("Unexpected response from the server.");
+      var prev = state.prevPrice, next = Object.create(null), flash = Object.create(null);
+      for (var i = 0; i < data.length; i++) {
+        var r = data[i];
+        r._last = isNum(r.last) ? r.last : r.price;
+        r._spread = spreadOf(r);
+        var k = keyOf(r);
+        var p = prev[k];
+        if (isNum(p) && isNum(r._last) && p !== r._last) flash[k] = r._last > p ? "up" : "down";
+        next[k] = r._last;
+        addExchange(r.exchange);
+      }
       state.prices = data;
-      for (var i = 0; i < data.length; i++) addExchangeOption(data[i].exchange);
+      state.prevPrice = next;
+      state.flash = flash;
+      state.errors.prices = null;
       renderTable();
-      updateLivePrice();
-      el("updated").textContent = "Updated " + new Date().toLocaleTimeString();
-      el("updated").classList.remove("error");
+      state.flash = Object.create(null);
+      updateChartPrices();
+      if (!state.overview) renderHealth();
+      $("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+      $("updated").classList.remove("err");
     } catch (e) {
-      el("updated").textContent = e.message;
-      el("updated").classList.add("error");
-    } finally {
-      setTimeout(pollPrices, PRICE_POLL_MS);
+      state.errors.prices = e.message;
+      $("updated").textContent = e.message;
+      $("updated").classList.add("err");
+      if (!state.prices.length) renderTable();
     }
-  }
-
-  async function loadExchanges() {
-    try {
-      var data = await getJSON("/ui/api/exchanges");
-      state.candleExchanges = data.candle_exchanges || [];
-      (data.exchanges || []).forEach(function (e) { addExchangeOption(e.name); });
-      var intervals = data.intervals || ["1m"];
-      intervalEl.innerHTML = intervals.map(function (iv) {
-        return '<option value="' + esc(iv) + '"' + (iv === state.interval ? " selected" : "") + ">" + esc(iv) + "</option>";
-      }).join("");
-    } catch (e) {
-      intervalEl.innerHTML = '<option value="1m" selected>1m</option>';
-    }
+    updateLive();
   }
 
   searchEl.addEventListener("input", renderTable);
-  exFilterEl.addEventListener("change", renderTable);
-  document.querySelectorAll("th.sortable").forEach(function (th) {
-    th.addEventListener("click", function () {
-      var k = th.dataset.key;
+  exFilterEl.addEventListener("change", function () { renderTable(); renderHealth(); });
+  document.querySelectorAll(".sort-btn").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var k = b.dataset.key;
       if (state.sortKey === k) state.sortDir = -state.sortDir;
-      else { state.sortKey = k; state.sortDir = 1; }
+      else { state.sortKey = k; state.sortDir = k === "symbol" || k === "exchange" ? 1 : -1; }
       renderTable();
     });
   });
-  rowsEl.addEventListener("click", function (ev) {
-    var tr = ev.target.closest("tr[data-i]");
-    if (!tr || !rowsEl._shown) return;
-    var r = rowsEl._shown[Number(tr.dataset.i)];
-    if (r) openChart(r.symbol, r.exchange);
+  function rowActivate(tr) {
+    var k = tr && tr.getAttribute("data-k");
+    if (!k) return;
+    var i = k.indexOf("|");
+    openChart(k.slice(i + 1), k.slice(0, i));
+  }
+  rowsEl.addEventListener("click", function (ev) { rowActivate(ev.target.closest("tr[data-k]")); });
+  rowsEl.addEventListener("keydown", function (ev) {
+    var tr = ev.target.closest("tr[data-k]");
+    if (!tr) return;
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); rowActivate(tr); }
+    else if (ev.key === "ArrowDown" && tr.nextElementSibling) { ev.preventDefault(); tr.nextElementSibling.focus(); }
+    else if (ev.key === "ArrowUp" && tr.previousElementSibling) { ev.preventDefault(); tr.previousElementSibling.focus(); }
+  });
+  $("health").addEventListener("click", function (ev) {
+    var c = ev.target.closest(".ex-card");
+    if (!c) return;
+    exFilterEl.value = exFilterEl.value === c.dataset.ex ? "" : c.dataset.ex;
+    renderTable(); renderHealth();
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "/" && !/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName)) {
+      ev.preventDefault(); searchEl.focus(); searchEl.select();
+    } else if (ev.key === "Escape" && state.selected && document.activeElement !== searchEl) {
+      closeChart();
+    }
   });
 
   // ---------- Chart ----------
 
-  var chart = null, candleSeries = null, volumeSeries = null;
-  var candleTimer = null;
-  var candleRequest = 0;
+  var chart = null, candleSeries = null, volumeSeries = null, markLine = null;
+  var candleTimer = null, candleRequest = 0, lastCandles = [];
+
+  function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function chartTheme() {
+    return {
+      layout: { background: { type: "solid", color: cssVar("--surface") }, textColor: cssVar("--text-2"), fontFamily: cssVar("--font") },
+      grid: { vertLines: { color: cssVar("--chart-grid") }, horzLines: { color: cssVar("--chart-grid") } },
+      rightPriceScale: { borderColor: cssVar("--border") },
+      timeScale: { borderColor: cssVar("--border") }
+    };
+  }
+  function hexToRgba(hex, a) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(hex);
+    if (!m) return hex;
+    var n = parseInt(m[1], 16);
+    return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + "," + a + ")";
+  }
+  function applyChartColors() {
+    if (!chart) return;
+    chart.applyOptions(chartTheme());
+    var up = cssVar("--ok"), down = cssVar("--bad");
+    candleSeries.applyOptions({ upColor: up, downColor: down, wickUpColor: up, wickDownColor: down });
+    if (markLine) markLine.applyOptions({ color: cssVar("--accent") });
+    setVolume(lastCandles);
+  }
 
   function ensureChart() {
     if (chart) return true;
     if (!window.LightweightCharts) return false;
-    chart = LightweightCharts.createChart(el("chart"), {
-      autoSize: true,
-      layout: { background: { type: "solid", color: "#171b21" }, textColor: "#c3cad3" },
-      grid: { vertLines: { color: "#232931" }, horzLines: { color: "#232931" } },
-      rightPriceScale: { borderColor: "#2a313b" },
-      timeScale: { borderColor: "#2a313b", timeVisible: true, secondsVisible: false },
-      crosshair: { mode: LightweightCharts.CrosshairMode.Normal }
+    var opts = chartTheme();
+    opts.autoSize = true;
+    opts.crosshair = { mode: LightweightCharts.CrosshairMode.Normal };
+    opts.timeScale.timeVisible = true;
+    opts.timeScale.secondsVisible = false;
+    opts.timeScale.rightOffset = 4;
+    chart = LightweightCharts.createChart($("chart"), opts);
+    candleSeries = chart.addCandlestickSeries({ borderVisible: false, priceLineVisible: true });
+    candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.1, bottom: 0.24 } });
+    volumeSeries = chart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "", lastValueVisible: false, priceLineVisible: false });
+    volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    chart.subscribeCrosshairMove(function (p) {
+      var c = p && p.time != null ? p.seriesData.get(candleSeries) : null;
+      var v = p && p.time != null ? p.seriesData.get(volumeSeries) : null;
+      renderLegend(c || lastCandles[lastCandles.length - 1], v ? v.value : null);
     });
-    candleSeries = chart.addCandlestickSeries({
-      upColor: "#26a69a", downColor: "#ef5350",
-      wickUpColor: "#26a69a", wickDownColor: "#ef5350", borderVisible: false
-    });
-    candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.25 } });
-    volumeSeries = chart.addHistogramSeries({
-      priceFormat: { type: "volume" }, priceScaleId: "", color: "rgba(76,154,255,0.45)"
-    });
-    volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+    applyChartColors();
     return true;
   }
 
-  function showChartMessage(msg) {
-    el("chart").style.display = msg ? "none" : "block";
-    el("chart-msg").style.display = msg ? "block" : "none";
-    el("chart-msg").textContent = msg || "";
+  function setVolume(candles) {
+    if (!volumeSeries) return;
+    var hasVolume = candles.some(function (c) { return c.volume > 0; });
+    var up = hexToRgba(cssVar("--ok"), 0.35), down = hexToRgba(cssVar("--bad"), 0.35);
+    volumeSeries.setData(hasVolume ? candles.map(function (c) {
+      return { time: c.time, value: c.volume || 0, color: c.close >= c.open ? up : down };
+    }) : []);
   }
 
-  function updateLivePrice() {
-    var sel = state.selected;
-    if (!sel) return;
-    var row = null;
+  function renderLegend(c, vol) {
+    var el = $("legend");
+    if (!c || !isNum(c.open)) { el.innerHTML = ""; return; }
+    if (vol == null && isNum(c.volume)) vol = c.volume;
+    var chg = c.open ? (c.close - c.open) / c.open * 100 : 0;
+    el.innerHTML =
+      "<span><b>O</b>" + fmtPrice(c.open) + "</span><span><b>H</b>" + fmtPrice(c.high) + "</span>" +
+      "<span><b>L</b>" + fmtPrice(c.low) + "</span><span><b>C</b>" + fmtPrice(c.close) + "</span>" +
+      '<span class="' + (chg >= 0 ? "pos" : "neg") + '">' + fmtPct(chg, 2) + "</span>" +
+      (isNum(vol) && vol > 0 ? "<span><b>V</b>" + fmtCompact(vol) + "</span>" : "");
+  }
+
+  function showChartMessage(msg) {
+    $("chart").style.display = msg ? "none" : "block";
+    $("legend").style.display = msg ? "none" : "flex";
+    $("chart-msg").hidden = !msg;
+    $("chart-msg").textContent = msg || "";
+  }
+
+  function findRow(sel) {
     for (var i = 0; i < state.prices.length; i++) {
       var r = state.prices[i];
-      if (r.symbol === sel.symbol && r.exchange === sel.exchange) { row = r; break; }
+      if (r.symbol === sel.symbol && r.exchange === sel.exchange) return r;
     }
-    el("chart-price").textContent = row ? fmtPrice(row.price) : "-";
-    el("chart-age").textContent = row ? fmtAge(row.age_seconds) : "no live price";
+    return null;
   }
 
-  function openChart(symbol, exchange) {
-    state.selected = { symbol: symbol, exchange: exchange };
+  function updateChartPrices() {
+    var sel = state.selected;
+    if (!sel) return;
+    var row = findRow(sel);
+    var last = row ? row._last : null;
+    $("c-last").textContent = fmtPrice(last);
+    $("c-mark").textContent = row ? fmtPrice(row.mark) : "-";
+    var sp = row ? row._spread : null;
+    var spEl = $("c-spread");
+    spEl.textContent = isNum(sp) ? fmtPct(sp, 3) : "-";
+    spEl.className = "v " + (!isNum(sp) ? "" : Math.abs(sp) >= 0.5 ? "warn-text" : sp > 0 ? "pos" : sp < 0 ? "neg" : "");
+    var ageEl = $("c-age");
+    ageEl.textContent = row ? fmtAge(row.age_seconds) : "no live price";
+    ageEl.className = "v" + (row && row.age_seconds > STALE_S ? " warn-text" : "");
+    if (candleSeries) {
+      if (row && isNum(row.mark)) {
+        if (!markLine) markLine = candleSeries.createPriceLine({ price: row.mark, color: cssVar("--accent"), lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "Mark" });
+        else markLine.applyOptions({ price: row.mark });
+      } else if (markLine) { candleSeries.removePriceLine(markLine); markLine = null; }
+    }
+  }
+
+  function renderIntervals() {
+    var box = $("intervals");
+    if (state.intervals.indexOf(state.interval) === -1) state.interval = state.intervals.indexOf("1m") !== -1 ? "1m" : state.intervals[0];
+    box.innerHTML = state.intervals.map(function (iv) {
+      return '<button type="button" class="iv" data-iv="' + esc(iv) + '" aria-pressed="' + (iv === state.interval) + '">' + esc(iv) + "</button>";
+    }).join("");
+  }
+  $("intervals").addEventListener("click", function (ev) {
+    var b = ev.target.closest(".iv");
+    if (!b || b.dataset.iv === state.interval) return;
+    state.interval = b.dataset.iv;
     state.fitNext = true;
-    el("chart-symbol").textContent = symbol;
-    el("chart-exchange").textContent = exchange;
-    el("chart-panel").classList.add("open");
-    updateLivePrice();
+    $("intervals").querySelectorAll(".iv").forEach(function (x) { x.setAttribute("aria-pressed", String(x.dataset.iv === state.interval)); });
+    loadCandles();
+  });
+
+  function openChart(symbol, exchange) {
+    var same = state.selected && state.selected.symbol === symbol && state.selected.exchange === exchange;
+    state.selected = { symbol: symbol, exchange: exchange };
+    $("c-symbol").textContent = symbol;
+    $("c-exchange").textContent = exLabel(exchange);
+    $("chart-empty").hidden = true;
+    $("chart-panel").hidden = false;
+    $("chart-area").classList.remove("closed");
     renderTable();
-    el("chart-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!same) {
+      state.fitNext = true;
+      lastCandles = [];
+      if (candleSeries) { candleSeries.setData([]); volumeSeries.setData([]); }
+      $("legend").innerHTML = "";
+      $("chart-status").textContent = "Loading candles";
+      $("chart-updated").textContent = "";
+    }
+    updateChartPrices();
+    if (window.matchMedia("(max-width: 1100px)").matches) {
+      var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      $("chart-area").scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+    }
     loadCandles();
   }
 
   function closeChart() {
+    var sel = state.selected;
     state.selected = null;
     clearTimeout(candleTimer);
     candleRequest++;
-    el("chart-panel").classList.remove("open");
+    $("chart-panel").hidden = true;
+    $("chart-empty").hidden = false;
+    $("chart-area").classList.add("closed");
     renderTable();
+    if (sel) {
+      var tr = rowsEl.querySelector('[data-k="' + CSS.escape(sel.exchange + "|" + sel.symbol) + '"]');
+      if (tr) tr.focus({ preventScroll: true });
+    }
+  }
+  $("chart-close").addEventListener("click", closeChart);
+
+  function noCandlesMsg(list) {
+    var names = (list || []).map(exLabel);
+    return names.length
+      ? "Candles are stored only for " + names.join(", ") + ". This exchange has live prices only."
+      : "Candles are not stored for this exchange. Live prices above still update.";
   }
 
   async function loadCandles() {
@@ -372,69 +1155,124 @@
     if (!sel) return;
     var req = ++candleRequest;
     var interval = state.interval;
-    var stored = state.candleExchanges.indexOf(sel.exchange) !== -1;
-
-    if (state.candleExchanges.length && !stored) {
-      showChartMessage("Candles are only stored for " + state.candleExchanges.join(", ") +
-        ". This exchange has live prices only.");
-      el("chart-status").textContent = "";
+    if (state.candleExchanges && state.candleExchanges.length && state.candleExchanges.indexOf(sel.exchange) === -1) {
+      showChartMessage(noCandlesMsg(state.candleExchanges));
+      $("chart-status").textContent = "Live price only";
+      $("chart-updated").textContent = "";
       return;
     }
     if (!ensureChart()) {
-      showChartMessage("The chart library could not be loaded. Live price above still updates.");
+      showChartMessage("The chart library could not be loaded. Prices above still update.");
+      $("chart-status").textContent = "";
       return;
     }
+    if (document.hidden) { candleTimer = setTimeout(loadCandles, CANDLE_POLL_MS); return; }
     try {
       var url = "/ui/api/candles?symbol=" + encodeURIComponent(sel.symbol) +
         "&exchange=" + encodeURIComponent(sel.exchange) +
-        "&interval=" + encodeURIComponent(interval) + "&limit=100";
+        "&interval=" + encodeURIComponent(interval) + "&limit=" + CANDLE_LIMIT;
       var data = await getJSON(url);
       if (req !== candleRequest) return;
-      if (!data.candles_stored) {
-        showChartMessage("Candles are only stored for " + (data.candle_exchanges || []).join(", ") +
-          ". This exchange has live prices only.");
-        el("chart-status").textContent = "";
+      if (data.candles_stored === false) {
+        showChartMessage(noCandlesMsg(data.candle_exchanges || state.candleExchanges));
+        $("chart-status").textContent = "Live price only";
+        $("chart-updated").textContent = "";
         return;
       }
-      var candles = data.candles || [];
+      var candles = (data.candles || []).filter(function (c) { return isNum(c.time) && isNum(c.open) && isNum(c.close); });
+      lastCandles = candles;
       if (!candles.length) {
-        showChartMessage("No " + interval + " candles stored yet for " + sel.symbol + " on " + sel.exchange + ".");
+        showChartMessage("No " + interval + " candles stored yet for " + sel.symbol + " on " + exLabel(sel.exchange) + ".");
       } else {
         showChartMessage("");
-        var last = candles[candles.length - 1].close;
-        var dec = decimalsFor(last);
+        var dec = decimalsFor(candles[candles.length - 1].close);
         candleSeries.applyOptions({ priceFormat: { type: "price", precision: dec, minMove: Math.pow(10, -dec) } });
         candleSeries.setData(candles.map(function (c) {
-          return { time: c.time, open: c.open, high: c.high, low: c.low, close: c.close };
+          return { time: c.time, open: c.open, high: isNum(c.high) ? c.high : Math.max(c.open, c.close), low: isNum(c.low) ? c.low : Math.min(c.open, c.close), close: c.close };
         }));
-        var hasVolume = candles.some(function (c) { return c.volume > 0; });
-        volumeSeries.setData(hasVolume ? candles.map(function (c) {
-          return {
-            time: c.time, value: c.volume,
-            color: c.close >= c.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)"
-          };
-        }) : []);
+        setVolume(candles);
         chart.applyOptions({ timeScale: { secondsVisible: /s$/.test(interval) } });
         if (state.fitNext) { chart.timeScale().fitContent(); state.fitNext = false; }
+        renderLegend(candles[candles.length - 1]);
+        updateChartPrices();
       }
-      el("chart-status").textContent = candles.length + " candles (" + interval + "), refreshed " +
-        new Date().toLocaleTimeString() + ". Times shown in UTC.";
+      $("chart-status").textContent = candles.length + " candles, " + interval;
+      $("chart-updated").textContent = "Refreshed " + new Date().toLocaleTimeString();
     } catch (e) {
       if (req !== candleRequest) return;
-      el("chart-status").textContent = e.message;
+      if (!lastCandles.length) showChartMessage("Candles unavailable: " + e.message);
+      $("chart-status").textContent = "Candles unavailable: " + e.message;
     } finally {
       if (req === candleRequest && state.selected) candleTimer = setTimeout(loadCandles, CANDLE_POLL_MS);
     }
   }
 
-  intervalEl.addEventListener("change", function () {
-    state.interval = intervalEl.value;
-    state.fitNext = true;
-    loadCandles();
-  });
-  el("chart-close").addEventListener("click", closeChart);
+  var schemeMq = window.matchMedia("(prefers-color-scheme: light)");
+  (schemeMq.addEventListener ? schemeMq.addEventListener.bind(schemeMq, "change") : schemeMq.addListener.bind(schemeMq))(applyChartColors);
 
-  loadExchanges().then(pollPrices);
+  // ---------- Alerts ----------
+
+  var ICON_UP = '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 10l4-4 2.5 2.5L12 5M8.5 5H12v3.5"/></svg>';
+  var ICON_DOWN = '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4l4 4 2.5-2.5L12 9M8.5 9H12V5.5"/></svg>';
+  var alertsData = [];
+
+  function parseUtc(ts) {
+    if (typeof ts === "number") return ts * (ts < 1e12 ? 1000 : 1);
+    var s = String(ts || "");
+    if (s && !/[zZ]|[+\-]\d\d:?\d\d$/.test(s)) s += "Z";
+    var t = Date.parse(s);
+    return isNaN(t) ? null : t;
+  }
+
+  function renderAlerts() {
+    var ul = $("alerts");
+    if (!alertsData.length) { ul.innerHTML = '<li class="alerts-empty">No alerts yet.</li>'; return; }
+    var html = alertsData.map(function (a, i) {
+      var drop = a.alert_type === "drop" || (isNum(a.change_percent) && a.change_percent < 0 && a.alert_type !== "spike");
+      var t = parseUtc(a.timestamp);
+      var when = t ? timeAgo(t) : "";
+      var full = t ? new Date(t).toLocaleString() : "";
+      return '<li class="alert-item"><button type="button" class="alert-btn" data-i="' + i + '" aria-label="' +
+        esc(a.symbol + " " + exLabel(a.exchange) + " " + (drop ? "drop" : "spike") + " " + fmtPct(a.change_percent, 2) + " over " + (a.interval || "") + ", " + when + ". Open chart") + '">' +
+        '<span class="alert-kind ' + (drop ? "drop" : "spike") + '">' + (drop ? ICON_DOWN : ICON_UP) + "</span>" +
+        '<span class="alert-main"><span class="alert-title">' + esc(a.symbol || "-") + '</span><span class="alert-sub">' +
+          esc(exLabel(a.exchange)) + (a.interval ? " · " + esc(a.interval) : "") + (a.sent === false ? " · not sent" : "") + "</span></span>" +
+        '<span class="alert-right"><span class="alert-chg ' + (drop ? "neg" : "pos") + '">' + fmtPct(a.change_percent, 2) + '</span><span class="alert-when" title="' + esc(full) + '">' + esc(when) + "</span></span>" +
+        "</button></li>";
+    }).join("");
+    preserveFocus(ul, "data-i", function () { ul.innerHTML = html; });
+  }
+
+  $("alerts").addEventListener("click", function (ev) {
+    var b = ev.target.closest(".alert-btn");
+    if (!b) return;
+    var a = alertsData[Number(b.dataset.i)];
+    if (a && a.symbol && a.exchange) openChart(a.symbol, a.exchange);
+  });
+
+  async function pollAlerts() {
+    try {
+      var data = await getJSON("/ui/api/alerts?limit=50");
+      alertsData = Array.isArray(data) ? data : (data.alerts || []);
+      renderAlerts();
+      $("alerts-note").textContent = alertsData.length ? "Last " + alertsData.length : "";
+    } catch (e) {
+      $("alerts").innerHTML = '<li class="card-pad"><div class="inline-msg">Alerts unavailable: ' + esc(e.message) + "</div></li>";
+      $("alerts-note").textContent = "";
+    }
+  }
+
+  // ---------- Start ----------
+
+  setInterval(function () { if (state.overview) $("uptime-v").textContent = fmtUptime(state.overview.uptime_seconds); }, 30000);
+  document.addEventListener("visibilitychange", updateLive);
+  renderIntervals();
+  renderTable();
+  loadExchanges().then(function () {
+    poller(pollOverview, OVERVIEW_POLL_MS, false)();
+    poller(pollPrices, PRICE_POLL_MS, true)();
+    poller(pollAlerts, ALERTS_POLL_MS, true)();
+  });
 })();
 </script>
 </body>

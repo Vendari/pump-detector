@@ -1,10 +1,10 @@
-//! Exchange price feeds. Binance and Gate stream every market (they build
-//! candles and alerts); Bybit, KuCoin, Aster and Hyperliquid connect only for
-//! the symbols someone watches (a /ws/price client or a trailing position).
+//! Exchange price feeds. All six venues stream every USDT perpetual they
+//! list, with last and mark prices; see each module for its streams.
 
 pub mod binance;
 pub mod gate;
-pub mod on_demand;
+pub mod markets;
+pub mod venues;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -15,6 +15,16 @@ use tokio::sync::mpsc;
 use crate::model::PriceUpdate;
 
 pub type Sink = mpsc::Sender<Vec<PriceUpdate>>;
+
+/// Every exchange name, in display order.
+pub const EXCHANGES: [&str; 6] = [
+    "binance_futures",
+    "gate_futures",
+    "bybit_futures",
+    "kucoin_futures",
+    "aster_futures",
+    "hyperliquid",
+];
 
 /// Reconnect pacing: 5 s between attempts; after 10 failed attempts in a
 /// row the next one waits a day, so a feed that keeps failing (an IP ban,

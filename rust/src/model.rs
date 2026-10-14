@@ -3,6 +3,12 @@
 use chrono::{DateTime, Utc};
 
 /// One price from an exchange feed.
+///
+/// `price` is the market's main price: the one /ws/price, trailing take
+/// profit, candles and alerts have always used (Gate: mark, falling back to
+/// last; every other venue: last trade). `last` and `mark` are kept apart
+/// for /v1 clients. A mark-only update (`primary == false`) carries just a
+/// mark price and leaves the main price, candles and trailing alone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PriceUpdate {
     pub symbol: String,
@@ -12,6 +18,53 @@ pub struct PriceUpdate {
     pub timestamp: DateTime<Utc>,
     /// Rolling 24 h quote volume (USDT); candles use the deltas between ticks.
     pub quote_volume_24h: Option<f64>,
+    /// Quote volume of this tick itself (a trade), added to the open candles.
+    pub volume: Option<f64>,
+    pub last: Option<f64>,
+    pub mark: Option<f64>,
+    pub primary: bool,
+}
+
+impl PriceUpdate {
+    /// A main-price update whose price is the last trade.
+    pub fn last_trade(
+        symbol: String,
+        exchange: &'static str,
+        price: f64,
+        timestamp: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            symbol,
+            exchange,
+            price,
+            timestamp,
+            quote_volume_24h: None,
+            volume: None,
+            last: Some(price),
+            mark: None,
+            primary: true,
+        }
+    }
+
+    /// A mark price only.
+    pub fn mark_only(
+        symbol: String,
+        exchange: &'static str,
+        mark: f64,
+        timestamp: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            symbol,
+            exchange,
+            price: mark,
+            timestamp,
+            quote_volume_24h: None,
+            volume: None,
+            last: None,
+            mark: Some(mark),
+            primary: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

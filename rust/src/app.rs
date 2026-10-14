@@ -4,7 +4,7 @@
 //! close requests run in their own tasks so a slow one never delays prices.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use crate::alerts::{self, PriceAlert, SpikeAlertConfig};
 use crate::candles::CandleBook;
 use crate::config::Config;
+use crate::feeds::markets::Registry;
 use crate::feeds::Alive;
 use crate::hub::Hub;
 use crate::model::{Candle, PriceUpdate};
@@ -29,6 +30,29 @@ pub struct Stats {
     pub candles_created: AtomicU64,
     pub alerts_sent: AtomicU64,
     pub trailing_closes: AtomicU64,
+    /// Price updates per second over the last 5 s (f64 bits).
+    pub updates_per_second: AtomicU64,
+    /// Open /ws/price and /v1 WebSocket clients.
+    pub stream_clients: AtomicUsize,
+}
+
+impl Stats {
+    pub fn rate(&self) -> f64 {
+        f64::from_bits(self.updates_per_second.load(Ordering::Relaxed))
+    }
+}
+
+/// One exchange's connections (Binance and Gate have one main stream; the
+/// mark stream and the other venues' shards add more).
+pub struct Feed {
+    pub name: &'static str,
+    pub connections: Vec<Alive>,
+}
+
+impl Feed {
+    pub fn up(&self) -> usize {
+        self.connections.iter().filter(|a| a.get()).count()
+    }
 }
 
 pub struct App {
@@ -38,9 +62,17 @@ pub struct App {
     pub store: Store,
     pub configs: RwLock<Vec<SpikeAlertConfig>>,
     pub stats: Stats,
-    /// (exchange name, connected)
-    pub feeds: Vec<(&'static str, Alive)>,
+    pub feeds: Vec<Feed>,
+    pub markets: Registry,
+    /// Open candles (also read by /v1 for live candles).
+    pub book: Mutex<CandleBook>,
+    pub started: Instant,
     pub http: reqwest::Client,
+    /// Recent backfills by (exchange, symbol, interval), to ask each
+    /// exchange at most once a minute for the same chart.
+    pub backfilled: Mutex<HashMap<(String, String, &'static str), Instant>>,
+    pub backfill_slots: tokio::sync::Semaphore,
+    pub limits: crate::v1::Limits,
     candle_tx: mpsc::Sender<Candle>,
     alert_tx: mpsc::Sender<PriceAlert>,
     close_tx: mpsc::UnboundedSender<CloseOrder>,
@@ -57,7 +89,8 @@ impl App {
         cfg: Config,
         hub: Hub,
         store: Store,
-        feeds: Vec<(&'static str, Alive)>,
+        feeds: Vec<Feed>,
+        markets: Registry,
     ) -> (Arc<Self>, Channels) {
         let (candle_tx, candles) = mpsc::channel(200_000);
         let (alert_tx, alerts) = mpsc::channel(10_000);
@@ -70,7 +103,13 @@ impl App {
             configs: RwLock::new(Vec::new()),
             stats: Stats::default(),
             feeds,
+            markets,
+            book: Mutex::new(CandleBook::new()),
+            started: Instant::now(),
             http: reqwest::Client::builder().build().expect("http client"),
+            backfilled: Mutex::new(HashMap::new()),
+            backfill_slots: tokio::sync::Semaphore::new(4),
+            limits: crate::v1::Limits::default(),
             candle_tx,
             alert_tx,
             close_tx,
@@ -118,8 +157,11 @@ impl App {
         statuses
     }
 
-    fn on_update(&self, u: &PriceUpdate, book: &mut CandleBook) {
+    fn on_update(&self, u: &PriceUpdate) {
         self.hub.lock().publish(u);
+        if !u.primary {
+            return;
+        }
 
         let closes = self
             .trailing
@@ -132,7 +174,7 @@ impl App {
         if !self.cfg.candle_exchanges.contains(u.exchange) {
             return;
         }
-        let done = book.add(u);
+        let done = self.book.lock().add(u);
         if done.is_empty() {
             return;
         }
@@ -140,11 +182,14 @@ impl App {
             .candles_created
             .fetch_add(done.len() as u64, Ordering::Relaxed);
         let now = chrono::Utc::now();
+        let alerting = self.cfg.alert_exchanges.contains(u.exchange);
         let configs = self.configs.read();
         for c in done {
-            for a in alerts::check(&c, self.cfg.webhook_url.as_deref(), &configs, now) {
-                if self.alert_tx.try_send(a).is_err() {
-                    tracing::warn!("alert queue full; dropping an alert");
+            if alerting {
+                for a in alerts::check(&c, self.cfg.webhook_url.as_deref(), &configs, now) {
+                    if self.alert_tx.try_send(a).is_err() {
+                        tracing::warn!("alert queue full; dropping an alert");
+                    }
                 }
             }
             if self.candle_tx.try_send(c).is_err() {
@@ -155,7 +200,6 @@ impl App {
 
     /// The price pipeline. Runs until every feed is gone.
     pub async fn process(self: Arc<Self>, mut rx: mpsc::Receiver<Vec<PriceUpdate>>) {
-        let mut book = CandleBook::new();
         let mut batches = Vec::new();
         while rx.recv_many(&mut batches, 64).await > 0 {
             for batch in batches.drain(..) {
@@ -163,9 +207,28 @@ impl App {
                     .total_updates
                     .fetch_add(batch.len() as u64, Ordering::Relaxed);
                 for u in &batch {
-                    self.on_update(u, &mut book);
+                    self.on_update(u);
                 }
             }
+        }
+    }
+
+    /// Updates per second, sampled every 5 s.
+    pub async fn measure(self: Arc<Self>) {
+        let mut every = tokio::time::interval(Duration::from_secs(5));
+        let mut prev = (Instant::now(), 0u64);
+        loop {
+            every.tick().await;
+            let now = Instant::now();
+            let n = self.stats.total_updates.load(Ordering::Relaxed);
+            let secs = now.duration_since(prev.0).as_secs_f64();
+            if secs > 0.0 {
+                let rate = (n - prev.1) as f64 / secs;
+                self.stats
+                    .updates_per_second
+                    .store(rate.to_bits(), Ordering::Relaxed);
+            }
+            prev = (now, n);
         }
     }
 

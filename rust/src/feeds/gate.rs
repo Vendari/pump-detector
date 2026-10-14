@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
+use super::markets::Registry;
 use super::{num, Alive, Reconnect, Sink};
 use crate::model::PriceUpdate;
 
@@ -66,7 +67,9 @@ pub fn parse(text: &str) -> Vec<PriceUpdate> {
         .flatten()
         .filter_map(|item| {
             let contract = item.get("contract")?.as_str()?;
-            let price = num(item.get("mark_price")).or_else(|| num(item.get("last")))?;
+            let mark = num(item.get("mark_price"));
+            let last = num(item.get("last"));
+            let price = mark.or(last)?;
             let qv = num(item.get("volume_24h_quote")).or_else(|| num(item.get("volume_24h")));
             Some(PriceUpdate {
                 symbol: symbol_of(contract),
@@ -74,7 +77,26 @@ pub fn parse(text: &str) -> Vec<PriceUpdate> {
                 price,
                 timestamp: ts,
                 quote_volume_24h: qv,
+                volume: None,
+                last,
+                mark,
+                primary: true,
             })
+        })
+        .collect()
+}
+
+fn listed(contracts: &[String]) -> super::markets::VenueMarkets {
+    contracts
+        .iter()
+        .map(|c| {
+            (
+                symbol_of(c),
+                super::markets::MarketInfo {
+                    venue_symbol: c.clone(),
+                    multiplier: 1.0,
+                },
+            )
         })
         .collect()
 }
@@ -102,14 +124,14 @@ async fn fetch_contracts(http: &reqwest::Client) -> Result<Vec<String>, String> 
     Ok(trading_contracts(&rows))
 }
 
-pub async fn run(sink: Sink, alive: Alive) {
+pub async fn run(sink: Sink, alive: Alive, registry: Registry) {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(90))
         .build()
         .expect("http client");
     let mut pace = Reconnect::new(NAME);
     loop {
-        let got = session(&sink, &alive, &http).await;
+        let got = session(&sink, &alive, &http, &registry).await;
         alive.set(false);
         if sink.is_closed() {
             return;
@@ -120,7 +142,7 @@ pub async fn run(sink: Sink, alive: Alive) {
     }
 }
 
-async fn session(sink: &Sink, alive: &Alive, http: &reqwest::Client) -> bool {
+async fn session(sink: &Sink, alive: &Alive, http: &reqwest::Client, registry: &Registry) -> bool {
     tracing::info!("Connecting to Gate futures: {WS_URL}");
     let mut req = WS_URL.into_client_request().expect("url");
     req.headers_mut()
@@ -151,6 +173,7 @@ async fn session(sink: &Sink, alive: &Alive, http: &reqwest::Client) -> bool {
                 "Gate futures: initial subscribe for {} contract(s)",
                 contracts.len()
             );
+            registry.set(NAME, listed(&contracts));
             for batch in contracts.chunks(BATCH) {
                 if tx.send(Message::text(subscribe_msg(batch))).await.is_err() {
                     return false;
@@ -199,6 +222,9 @@ async fn session(sink: &Sink, alive: &Alive, http: &reqwest::Client) -> bool {
             _ = refresh.tick() => {
                 match fetch_contracts(http).await {
                     Ok(contracts) => {
+                        if !contracts.is_empty() {
+                            registry.set(NAME, listed(&contracts));
+                        }
                         let new: Vec<String> = contracts.into_iter().filter(|c| !subscribed.contains(c)).collect();
                         if !new.is_empty() {
                             tracing::info!("Gate futures: subscribing to {} new contract(s): {:?}", new.len(), &new[..new.len().min(5)]);
@@ -240,6 +266,8 @@ mod tests {
             ("BTCUSDT", 101.0, Some(5000.0))
         );
         assert_eq!((u[1].symbol.as_str(), u[1].price), ("ETHUSDT", 10.0));
+        assert_eq!((u[0].last, u[0].mark), (Some(100.0), Some(101.0)));
+        assert_eq!(u[1].mark, None);
         assert!(parse(
             r#"{"channel":"futures.tickers","event":"subscribe","result":{"status":"success"}}"#
         )

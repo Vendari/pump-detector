@@ -20,17 +20,17 @@ use tokio::sync::mpsc;
 
 use crate::alerts::SpikeAlertConfig;
 use crate::app::App;
-use crate::feeds::on_demand::Venue;
+use crate::feeds::venues::Venue;
 use crate::hub::price_json;
 use crate::model::{iso_naive, Interval};
-use crate::store::{to_json, MAX_CANDLES_PER_INTERVAL};
+use crate::store::to_json;
 use crate::trailing::WatchRequest;
 
 const UI_HTML: &str = include_str!("../static/ui.html");
 
 type AppState = State<Arc<App>>;
 
-fn eq(a: &str, b: &str) -> bool {
+pub fn eq(a: &str, b: &str) -> bool {
     a.as_bytes().ct_eq(b.as_bytes()).into()
 }
 
@@ -86,8 +86,9 @@ async fn auth(State(app): AppState, req: Request, next: Next) -> Response {
         }
         return next.run(req).await;
     }
-    // /health is open; /ws/price checks its own key (header or ?key=).
-    if path == "/health" || path == "/ws/price" {
+    // /health is open; /ws/price checks its own key (header or ?key=);
+    // /v1 has its own guard (API key or browser token).
+    if path == "/health" || path == "/ws/price" || path.starts_with("/v1/") {
         return next.run(req).await;
     }
     let given = req.headers().get("x-api-key").and_then(|v| v.to_str().ok());
@@ -116,12 +117,15 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/ui/api/prices", get(ui_prices))
         .route("/ui/api/exchanges", get(ui_exchanges))
         .route("/ui/api/candles", get(ui_candles))
+        .route("/ui/api/overview", get(ui_overview))
+        .route("/ui/api/alerts", get(ui_alerts))
+        .merge(crate::v1::router(app.clone()))
         .layer(middleware::from_fn_with_state(app.clone(), auth))
         .with_state(app)
 }
 
 fn exchange_names(app: &App) -> Vec<&'static str> {
-    app.feeds.iter().map(|(n, _)| *n).collect()
+    app.feeds.iter().map(|f| f.name).collect()
 }
 
 async fn root(State(app): AppState) -> Json<Value> {
@@ -134,22 +138,29 @@ async fn root(State(app): AppState) -> Json<Value> {
 }
 
 async fn health(State(app): AppState) -> Json<Value> {
-    // On-demand feeds are idle when nothing is watched; count them as up.
     let active: Vec<&str> = app
         .feeds
         .iter()
-        .filter(|(n, a)| a.get() || Venue::from_name(n).is_some())
-        .map(|(n, _)| *n)
+        .filter(|f| f.up() > 0)
+        .map(|f| f.name)
         .collect();
+    // Same rule as before: healthy while Binance or Gate streams; each
+    // exchange's connections are listed for a closer look.
     let streaming = app
         .feeds
         .iter()
-        .filter(|(n, a)| Venue::from_name(n).is_none() && a.get())
+        .filter(|f| Venue::from_name(f.name).is_none() && f.up() > 0)
         .count();
+    let detail: Vec<Value> = app
+        .feeds
+        .iter()
+        .map(|f| json!({"name": f.name, "connections": f.connections.len(), "connections_up": f.up()}))
+        .collect();
     Json(json!({
         "status": if streaming > 0 { "healthy" } else { "degraded" },
         "active_exchanges": active,
         "total_exchanges": app.feeds.len(),
+        "exchanges": detail,
     }))
 }
 
@@ -160,7 +171,7 @@ async fn stats(State(app): AppState) -> Json<Value> {
         "total_updates": s.total_updates.load(Relaxed),
         "candles_created": s.candles_created.load(Relaxed),
         "alerts_sent": s.alerts_sent.load(Relaxed),
-        "active_exchanges": app.feeds.iter().filter(|(_, a)| a.get()).count(),
+        "active_exchanges": app.feeds.iter().filter(|f| f.up() > 0).count(),
         "trailing_positions": app.trailing.lock().len(),
         "trailing_closes": s.trailing_closes.load(Relaxed),
     }}))
@@ -192,7 +203,7 @@ async fn ws_price(
 }
 
 fn known_exchange(app: &App, ex: &str) -> bool {
-    app.feeds.iter().any(|(n, _)| *n == ex)
+    app.feeds.iter().any(|f| f.name == ex)
 }
 
 async fn ws_client(app: Arc<App>, socket: WebSocket) {
@@ -328,7 +339,7 @@ async fn candles(State(app): AppState, Query(q): Query<CandleQuery>) -> Response
     let Some(interval) = stored_interval(&q.interval) else {
         return bad_interval();
     };
-    let limit = q.limit.clamp(1, MAX_CANDLES_PER_INTERVAL);
+    let limit = q.limit.clamp(1, crate::v1::MAX_LIMIT);
     let rows = app
         .store
         .get_candles(&q.symbol, &q.exchange, interval, limit)
@@ -489,15 +500,107 @@ async fn ui_prices(State(app): AppState) -> Response {
     let rows: Vec<Value> = app
         .hub
         .lock()
-        .all_latest()
+        .all_quotes()
         .into_iter()
-        .map(|((ex, sym), l)| {
-            let ts = l.timestamp.timestamp_millis() as f64 / 1000.0;
-            let age = ((now - l.timestamp).num_milliseconds().max(0) as f64 / 100.0).round() / 10.0;
-            json!({"symbol": sym, "exchange": ex, "price": l.price, "timestamp": ts, "age_seconds": age})
+        .map(|((ex, sym), l, q)| {
+            let newest = [
+                l.map(|l| l.timestamp),
+                q.last.map(|x| x.1),
+                q.mark.map(|x| x.1),
+            ]
+            .into_iter()
+            .flatten()
+            .max()
+            .unwrap_or(now);
+            let ts = newest.timestamp_millis() as f64 / 1000.0;
+            let age = ((now - newest).num_milliseconds().max(0) as f64 / 100.0).round() / 10.0;
+            json!({"symbol": sym, "exchange": ex, "price": l.map(|l| l.price),
+                   "last": q.last.map(|x| x.0), "mark": q.mark.map(|x| x.0),
+                   "timestamp": ts, "age_seconds": age})
         })
         .collect();
     ([(header::CACHE_CONTROL, "no-store")], Json(rows)).into_response()
+}
+
+fn label(name: &str) -> &'static str {
+    match name {
+        "binance_futures" => "Binance",
+        "gate_futures" => "Gate",
+        "bybit_futures" => "Bybit",
+        "kucoin_futures" => "KuCoin",
+        "aster_futures" => "Aster",
+        "hyperliquid" => "Hyperliquid",
+        _ => "Other",
+    }
+}
+
+async fn ui_overview(State(app): AppState) -> Response {
+    use std::sync::atomic::Ordering::Relaxed;
+    let now = chrono::Utc::now();
+    let s = &app.stats;
+    let exchanges: Vec<Value> = {
+        let hub = app.hub.lock();
+        app.feeds
+            .iter()
+            .map(|f| {
+                json!({
+                    "name": f.name,
+                    "label": label(f.name),
+                    "connected": f.up() == f.connections.len(),
+                    "connections": f.connections.len(),
+                    "connections_up": f.up(),
+                    "markets": app.markets.count(f.name),
+                    "priced_markets": hub.priced(f.name, 300),
+                    "last_tick_age_seconds": hub.last_tick(f.name).map(|t| ((now - t).num_milliseconds().max(0) as f64 / 100.0).round() / 10.0),
+                    "candles": app.cfg.candle_exchanges.contains(f.name),
+                    "alerts": app.cfg.alert_exchanges.contains(f.name),
+                })
+            })
+            .collect()
+    };
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "uptime_seconds": app.started.elapsed().as_secs(),
+            "updates_per_second": (s.rate() * 10.0).round() / 10.0,
+            "total_updates": s.total_updates.load(Relaxed),
+            "candles_created": s.candles_created.load(Relaxed),
+            "alerts_sent": s.alerts_sent.load(Relaxed),
+            "trailing_positions": app.trailing.lock().len(),
+            "trailing_closes": s.trailing_closes.load(Relaxed),
+            "stream_clients": s.stream_clients.load(Relaxed),
+            "exchanges": exchanges,
+        })),
+    )
+        .into_response()
+}
+
+async fn ui_alerts(State(app): AppState, Query(q): Query<HashMap<String, String>>) -> Response {
+    let limit = q
+        .get("limit")
+        .and_then(|l| l.parse::<i64>().ok())
+        .unwrap_or(50)
+        .clamp(1, 200);
+    let alerts: Vec<Value> = app
+        .store
+        .recent_detected(limit)
+        .await
+        .into_iter()
+        .map(|mut a| {
+            let sent = a.get("webhook_url").is_some_and(|w| !w.is_null());
+            if let Some(o) = a.as_object_mut() {
+                o.remove("webhook_url");
+                o.insert("sent".into(), json!(sent));
+            }
+            a
+        })
+        .collect();
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"alerts": alerts})),
+    )
+        .into_response()
 }
 
 fn candle_exchanges_sorted(app: &App) -> Vec<String> {
@@ -510,12 +613,12 @@ async fn ui_exchanges(State(app): AppState) -> Json<Value> {
     let ex: Vec<Value> = app
         .feeds
         .iter()
-        .map(|(n, _)| json!({"name": n, "candles": app.cfg.candle_exchanges.contains(*n)}))
+        .map(|f| json!({"name": f.name, "candles": app.cfg.candle_exchanges.contains(f.name)}))
         .collect();
     Json(json!({
         "exchanges": ex,
         "candle_exchanges": candle_exchanges_sorted(&app),
-        "intervals": valid_intervals(),
+        "intervals": Interval::BUILT.iter().map(|i| i.as_str()).collect::<Vec<_>>(),
     }))
 }
 
@@ -526,37 +629,21 @@ async fn ui_candles(State(app): AppState, Query(q): Query<HashMap<String, String
             "symbol and exchange required",
         );
     };
+    if !known_exchange(&app, exchange) {
+        return err(StatusCode::BAD_REQUEST, "unknown exchange");
+    }
     let interval_s = q.get("interval").map(String::as_str).unwrap_or("1m");
-    let Some(interval) = stored_interval(interval_s) else {
+    let Some(interval) = Interval::parse(interval_s) else {
         return bad_interval();
     };
     let symbol = symbol.to_uppercase();
     let limit = q
         .get("limit")
         .and_then(|l| l.parse::<i64>().ok())
-        .unwrap_or(100)
-        .clamp(1, MAX_CANDLES_PER_INTERVAL);
+        .unwrap_or(300);
     let stored = app.cfg.candle_exchanges.contains(exchange.as_str());
-    let mut out = Vec::new();
-    if stored {
-        for c in app
-            .store
-            .get_candles(&symbol, exchange, interval, limit)
-            .await
-        {
-            let Ok(ts) = c.get_datetime("timestamp") else {
-                continue;
-            };
-            out.push(json!({
-                "time": ts.timestamp_millis() / 1000,
-                "open": c.get_f64("open").ok(),
-                "high": c.get_f64("high").ok(),
-                "low": c.get_f64("low").ok(),
-                "close": c.get_f64("close").ok(),
-                "volume": c.get_f64("volume").unwrap_or(0.0),
-            }));
-        }
-    }
+    let (bars, _) =
+        crate::v1::candle_series(&app, exchange, &symbol, interval, limit, None, true).await;
     (
         [(header::CACHE_CONTROL, "no-store")],
         Json(json!({
@@ -565,7 +652,7 @@ async fn ui_candles(State(app): AppState, Query(q): Query<HashMap<String, String
             "interval": interval_s,
             "candles_stored": stored,
             "candle_exchanges": candle_exchanges_sorted(&app),
-            "candles": out,
+            "candles": bars.iter().map(|b| b.json()).collect::<Vec<_>>(),
         })),
     )
         .into_response()

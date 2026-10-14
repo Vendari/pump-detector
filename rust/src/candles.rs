@@ -65,8 +65,8 @@ impl CandleBook {
             .markets
             .entry((u.exchange, u.symbol.clone()))
             .or_default();
-        let mut volume = 0.0;
-        if let Some(cum) = u.quote_volume_24h {
+        let mut volume = u.volume.unwrap_or(0.0);
+        if let Some(cum) = u.quote_volume_24h.filter(|_| u.volume.is_none()) {
             if let Some(last) = m.last_quote_volume {
                 if cum >= last {
                     volume = cum - last;
@@ -102,6 +102,31 @@ impl CandleBook {
         }
         done
     }
+
+    /// The candle still being built for a market and interval.
+    pub fn open_candle(&self, exchange: &str, symbol: &str, interval: Interval) -> Option<Candle> {
+        let i = Interval::BUILT.iter().position(|x| *x == interval)?;
+        let (key, m) = self
+            .markets
+            .get_key_value(&(exchange_static(exchange)?, symbol.to_string()))?;
+        let acc = m.open[i]?;
+        Some(Candle {
+            symbol: key.1.clone(),
+            exchange: key.0,
+            interval,
+            open: acc.open,
+            high: acc.high,
+            low: acc.low,
+            close: acc.close,
+            start: acc.start,
+            volume: acc.volume,
+        })
+    }
+}
+
+/// The feed's static name for an exchange name (map keys hold `&'static str`).
+fn exchange_static(name: &str) -> Option<&'static str> {
+    crate::feeds::EXCHANGES.iter().copied().find(|e| *e == name)
 }
 
 #[cfg(test)]
@@ -110,15 +135,13 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     fn tick(sec: i64, price: f64) -> PriceUpdate {
-        PriceUpdate {
-            symbol: "XUSDT".into(),
-            exchange: "binance_futures",
+        PriceUpdate::last_trade(
+            "XUSDT".into(),
+            "binance_futures",
             price,
-            timestamp: Utc
-                .timestamp_opt(1_791_000_000 - 1_791_000_000 % 604_800 + sec, 0)
+            Utc.timestamp_opt(1_791_000_000 - 1_791_000_000 % 604_800 + sec, 0)
                 .unwrap(),
-            quote_volume_24h: None,
-        }
+        )
     }
 
     #[test]
@@ -167,6 +190,23 @@ mod tests {
         b.add(&t);
         let done = b.add(&tick(10, 1.0));
         assert_eq!(done[0].volume, 30.0);
+    }
+
+    #[test]
+    fn trade_volume_and_open_candle() {
+        let mut b = CandleBook::new();
+        let mut t = tick(0, 2.0);
+        t.volume = Some(10.0);
+        t.quote_volume_24h = Some(1e9);
+        b.add(&t);
+        b.add(&t);
+        let c = b
+            .open_candle("binance_futures", "XUSDT", Interval::S10)
+            .unwrap();
+        assert_eq!((c.close, c.volume), (2.0, 20.0));
+        assert!(b
+            .open_candle("gate_futures", "XUSDT", Interval::S10)
+            .is_none());
     }
 
     #[test]

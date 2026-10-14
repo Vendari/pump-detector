@@ -1,5 +1,7 @@
-//! Latest price per market, /ws/price subscribers, and which symbols the
-//! on-demand feeds must stream (watched by a client or a trailing position).
+//! Latest price per market (the main price, plus last and mark kept apart),
+//! /ws/price subscribers, and which symbols the venue feeds must stream even
+//! when their contract lists do not have them yet (watched by a client or a
+//! trailing position).
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -7,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde_json::json;
 use tokio::sync::{mpsc, watch};
 
-use crate::feeds::on_demand::{usdt, Venue};
+use crate::feeds::venues::{usdt, Venue};
 use crate::model::{iso_naive, PriceUpdate};
 
 pub type Market = (String, String); // (exchange, symbol)
@@ -18,12 +20,22 @@ pub struct Latest {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Last and mark price of a market, each with the time it arrived.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Quote {
+    pub last: Option<(f64, DateTime<Utc>)>,
+    pub mark: Option<(f64, DateTime<Utc>)>,
+}
+
 pub fn price_json(symbol: &str, exchange: &str, l: &Latest) -> String {
     json!({"symbol": symbol, "exchange": exchange, "price": l.price, "timestamp": iso_naive(l.timestamp)}).to_string()
 }
 
 pub struct Hub {
     latest: HashMap<Market, Latest>,
+    quotes: HashMap<Market, Quote>,
+    /// Receive time of each exchange's newest tick.
+    last_tick: HashMap<&'static str, DateTime<Utc>>,
     subscribers: HashMap<Market, HashMap<u64, mpsc::Sender<String>>>,
     client_watch: HashMap<Market, usize>,
     trailing_watch: BTreeSet<Market>,
@@ -43,6 +55,8 @@ impl Hub {
         (
             Self {
                 latest: HashMap::new(),
+                quotes: HashMap::new(),
+                last_tick: HashMap::new(),
                 subscribers: HashMap::new(),
                 client_watch: HashMap::new(),
                 trailing_watch: BTreeSet::new(),
@@ -58,9 +72,23 @@ impl Hub {
         self.next_client
     }
 
-    /// Record a price and fan it out to subscribers (slow clients drop prices).
+    /// Record a price and fan main prices out to /ws/price subscribers (slow
+    /// clients drop prices). Mark-only updates just update the quote.
     pub fn publish(&mut self, u: &PriceUpdate) {
         let key = (u.exchange.to_string(), u.symbol.clone());
+        self.last_tick.insert(u.exchange, Utc::now());
+        if u.last.is_some() || u.mark.is_some() {
+            let q = self.quotes.entry(key.clone()).or_default();
+            if let Some(l) = u.last {
+                q.last = Some((l, u.timestamp));
+            }
+            if let Some(m) = u.mark {
+                q.mark = Some((m, u.timestamp));
+            }
+        }
+        if !u.primary {
+            return;
+        }
         let l = Latest {
             price: u.price,
             timestamp: u.timestamp,
@@ -80,8 +108,50 @@ impl Hub {
             .copied()
     }
 
-    pub fn all_latest(&self) -> Vec<(Market, Latest)> {
-        self.latest.iter().map(|(k, v)| (k.clone(), *v)).collect()
+    pub fn quote(&self, exchange: &str, symbol: &str) -> Option<Quote> {
+        self.quotes
+            .get(&(exchange.to_string(), symbol.to_string()))
+            .copied()
+    }
+
+    /// Every market with its main price and quote.
+    pub fn all_quotes(&self) -> Vec<(Market, Option<Latest>, Quote)> {
+        self.quotes
+            .iter()
+            .map(|(k, q)| (k.clone(), self.latest.get(k).copied(), *q))
+            .collect()
+    }
+
+    pub fn last_tick(&self, exchange: &str) -> Option<DateTime<Utc>> {
+        self.last_tick.get(exchange).copied()
+    }
+
+    /// Markets of an exchange with a main price newer than `max_age_secs`.
+    pub fn priced(&self, exchange: &str, max_age_secs: i64) -> usize {
+        let now = Utc::now();
+        self.latest
+            .iter()
+            .filter(|((ex, _), l)| {
+                ex == exchange && (now - l.timestamp).num_seconds() <= max_age_secs
+            })
+            .count()
+    }
+
+    /// A /v1 client watches a market (so the venue streams it even before
+    /// its contract list has it).
+    pub fn watch(&mut self, market: &Market) {
+        *self.client_watch.entry(market.clone()).or_default() += 1;
+        self.publish_venue(&market.0);
+    }
+
+    pub fn unwatch(&mut self, market: &Market) {
+        if let Some(n) = self.client_watch.get_mut(market) {
+            *n -= 1;
+            if *n == 0 {
+                self.client_watch.remove(market);
+            }
+            self.publish_venue(&market.0);
+        }
     }
 
     pub fn subscribe(&mut self, client: u64, market: Market, tx: mpsc::Sender<String>) {
@@ -153,13 +223,7 @@ mod tests {
     use super::*;
 
     fn upd(price: f64) -> PriceUpdate {
-        PriceUpdate {
-            symbol: "BTCUSDT".into(),
-            exchange: "bybit_futures",
-            price,
-            timestamp: Utc::now(),
-            quote_volume_24h: None,
-        }
+        PriceUpdate::last_trade("BTCUSDT".into(), "bybit_futures", price, Utc::now())
     }
 
     #[tokio::test]
@@ -183,5 +247,26 @@ mod tests {
         );
         hub.set_trailing_markets(vec![]);
         assert!(bybit.borrow().is_empty());
+
+        hub.watch(&m);
+        assert!(bybit.borrow().contains("BTCUSDT"));
+        hub.unwatch(&m);
+        assert!(bybit.borrow().is_empty());
+    }
+
+    #[test]
+    fn marks_do_not_move_the_main_price() {
+        let (mut hub, _rx) = Hub::new();
+        hub.publish(&upd(5.0));
+        hub.publish(&PriceUpdate::mark_only(
+            "BTCUSDT".into(),
+            "bybit_futures",
+            4.9,
+            Utc::now(),
+        ));
+        assert_eq!(hub.latest("bybit_futures", "BTCUSDT").unwrap().price, 5.0);
+        let q = hub.quote("bybit_futures", "BTCUSDT").unwrap();
+        assert_eq!((q.last.unwrap().0, q.mark.unwrap().0), (5.0, 4.9));
+        assert_eq!(hub.priced("bybit_futures", 60), 1);
     }
 }
