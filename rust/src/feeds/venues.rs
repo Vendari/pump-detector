@@ -26,7 +26,7 @@
 //! Spot (Binance, Bybit, Gate, KuCoin) is a fallback for tokens with no
 //! futures market: those venues load their USDT pair lists but connect only
 //! for the symbols someone watches, and close a minute after the last one
-//! leaves. Streams: Binance `wss://stream.binance.com:9443/ws` `<sym>@aggTrade`;
+//! leaves. Streams: Binance `wss://stream.binance.com:9443/ws` `<sym>@miniTicker`;
 //! Bybit `/v5/public/spot` `tickers.<SYM>`; Gate `wss://api.gateio.ws/ws/v4/`
 //! `spot.tickers`; KuCoin spot bullet token, `/market/ticker:<BASE-USDT>`.
 
@@ -210,8 +210,11 @@ impl Venue {
                 .chunks(100)
                 .map(|c| {
                     *msg_id += 1;
+                    // Binance spot: the per-symbol mini ticker pushes every
+                    // second, so a quiet pair still gets a first price fast.
+                    let stream = if self == Venue::Aster { "aggTrade" } else { "miniTicker" };
                     json!({"method": if subscribe {"SUBSCRIBE"} else {"UNSUBSCRIBE"},
-                           "params": c.iter().map(|s| format!("{}@aggTrade", s.to_lowercase())).collect::<Vec<_>>(),
+                           "params": c.iter().map(|s| format!("{}@{stream}", s.to_lowercase())).collect::<Vec<_>>(),
                            "id": *msg_id})
                     .to_string()
                 })
@@ -336,7 +339,21 @@ impl Venue {
                     _ => Vec::new(),
                 }
             }
-            Venue::Aster | Venue::BinanceSpot => {
+            Venue::BinanceSpot => {
+                if v.get("e").and_then(Value::as_str) != Some("24hrMiniTicker") {
+                    return Vec::new();
+                }
+                match (s(v.get("s")), num(v.get("c"))) {
+                    (Some(sym), Some(p)) => vec![Tick {
+                        venue_symbol: sym.to_uppercase(),
+                        last: Some(p),
+                        quote_volume_24h: num(v.get("q")),
+                        ..Tick::default()
+                    }],
+                    _ => Vec::new(),
+                }
+            }
+            Venue::Aster => {
                 if v.get("e").and_then(Value::as_str) != Some("aggTrade") {
                     return Vec::new();
                 }
@@ -888,7 +905,8 @@ mod tests {
             (k[0].venue_symbol.as_str(), k[0].last),
             ("BTC-USDT", Some(64001.0))
         );
-        let b = Venue::BinanceSpot.parse(r#"{"e":"aggTrade","s":"BTCUSDT","p":"64002","q":"1"}"#);
+        let b = Venue::BinanceSpot
+            .parse(r#"{"e":"24hrMiniTicker","s":"BTCUSDT","c":"64002","q":"1000"}"#);
         assert_eq!(b[0].last, Some(64002.0));
         assert_eq!(Venue::GateSpot.venue_symbol("btc"), "BTC_USDT");
         assert_eq!(Venue::KucoinSpot.venue_symbol("BTCUSDT"), "BTC-USDT");
