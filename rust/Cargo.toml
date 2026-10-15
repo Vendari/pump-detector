@@ -24,6 +24,8 @@ uuid = { version = "1", features = ["v4"] }
 hmac = "0.12"
 sha2 = "0.10"
 tower-http = { version = "0.6", features = ["cors"] }
+tikv-jemallocator = "0.6"
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 
 [profile.release]
 lto = "thin"

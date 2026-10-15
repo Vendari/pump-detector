@@ -164,6 +164,15 @@ async fn health(State(app): AppState) -> Json<Value> {
     }))
 }
 
+/// Bytes the app has allocated and jemalloc holds from the OS.
+pub fn memory() -> Value {
+    let _ = tikv_jemalloc_ctl::epoch::advance();
+    json!({
+        "allocated_mb": tikv_jemalloc_ctl::stats::allocated::read().unwrap_or(0) / 1_048_576,
+        "resident_mb": tikv_jemalloc_ctl::stats::resident::read().unwrap_or(0) / 1_048_576,
+    })
+}
+
 async fn stats(State(app): AppState) -> Json<Value> {
     use std::sync::atomic::Ordering::Relaxed;
     let s = &app.stats;
@@ -174,6 +183,7 @@ async fn stats(State(app): AppState) -> Json<Value> {
         "active_exchanges": app.feeds.iter().filter(|f| f.up() > 0).count(),
         "trailing_positions": app.trailing.lock().len(),
         "trailing_closes": s.trailing_closes.load(Relaxed),
+        "memory": memory(),
     }}))
 }
 
@@ -575,6 +585,7 @@ async fn ui_overview(State(app): AppState) -> Response {
             "trailing_positions": app.trailing.lock().len(),
             "trailing_closes": s.trailing_closes.load(Relaxed),
             "stream_clients": s.stream_clients.load(Relaxed),
+            "memory": memory(),
             "marks_clients": s.marks_clients.load(Relaxed),
             "marks_pushed": s.marks_pushed.load(Relaxed),
             "exchanges": exchanges,

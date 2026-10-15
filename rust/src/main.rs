@@ -20,6 +20,12 @@ mod v1;
 
 use std::sync::Arc;
 
+// jemalloc instead of glibc malloc: the feeds parse thousands of small JSON
+// frames a second across threads, and glibc's per-thread arenas kept the
+// freed memory (RSS grew ~400 MB/hour while live data stayed flat).
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use tokio::sync::mpsc;
 
 use crate::feeds::venues::Venue;
