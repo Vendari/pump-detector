@@ -119,6 +119,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/ui/api/candles", get(ui_candles))
         .route("/ui/api/overview", get(ui_overview))
         .route("/ui/api/alerts", get(ui_alerts))
+        .route("/ui/api/gaps", get(ui_api_gaps))
         .merge(crate::v1::router(app.clone()))
         .layer(middleware::from_fn_with_state(app.clone(), auth))
         .with_state(app)
@@ -520,6 +521,72 @@ async fn ui_prices(State(app): AppState) -> Response {
         })
         .collect();
     ([(header::CACHE_CONTROL, "no-store")], Json(rows)).into_response()
+}
+
+/// `?exchanges=a,b&max_pct=10&price=last|mark&max_age=60&limit=300`
+async fn ui_api_gaps(State(app): AppState, Query(q): Query<HashMap<String, String>>) -> Response {
+    let num = |k: &str| {
+        q.get(k)
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+    };
+    let opts = crate::gaps::Opts {
+        exchanges: q
+            .get("exchanges")
+            .map(|e| {
+                e.split(',')
+                    .map(str::trim)
+                    .filter(|e| !e.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        max_pct: num("max_pct").unwrap_or(10.0).clamp(0.01, 1000.0),
+        source: if q.get("price").is_some_and(|p| p == "mark") {
+            crate::gaps::Source::Mark
+        } else {
+            crate::gaps::Source::Last
+        },
+        max_age_secs: num("max_age").unwrap_or(60.0).clamp(1.0, 3600.0) as i64,
+    };
+    let limit = num("limit").unwrap_or(300.0).clamp(1.0, 2000.0) as usize;
+    let (quotes, ticks) = {
+        let hub = app.hub.lock();
+        let quotes: Vec<_> = hub
+            .all_quotes()
+            .into_iter()
+            .map(|(m, _, q)| (m, q))
+            .collect();
+        let ticks: HashMap<String, chrono::DateTime<chrono::Utc>> = crate::feeds::FUTURES
+            .iter()
+            .filter_map(|ex| hub.last_tick(ex).map(|t| (ex.to_string(), t)))
+            .collect();
+        (quotes, ticks)
+    };
+    let hyperliquid = app.markets.venue("hyperliquid");
+    let venue_symbol = |ex: &str, sym: &str| {
+        (ex == "hyperliquid")
+            .then(|| hyperliquid.get(sym).map(|m| m.venue_symbol.clone()))
+            .flatten()
+    };
+    let now = chrono::Utc::now();
+    let mut report = crate::gaps::gaps(&quotes, &ticks, venue_symbol, now, &opts);
+    let total = report.rows.len();
+    report.rows.truncate(limit);
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({
+            "ts": now.timestamp_millis(),
+            "max_pct": opts.max_pct,
+            "price": if opts.source == crate::gaps::Source::Mark { "mark" } else { "last" },
+            "max_age": opts.max_age_secs,
+            "compared": report.compared,
+            "hidden": report.hidden,
+            "total": total,
+            "rows": report.rows,
+        })),
+    )
+        .into_response()
 }
 
 fn label(name: &str) -> &'static str {

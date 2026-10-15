@@ -369,6 +369,34 @@
     .select-wrap { flex: 1 1 120px; }
     .uptime-label { display: none; }
   }
+  /* ---------- Price gaps ---------- */
+  .gaps-wrap { max-height: min(52vh, 520px); }
+  .gaps-controls { align-items: center; }
+  .gaps-controls .num-wrap { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; font-size: 12px; color: var(--muted); }
+  .gaps-controls .num-wrap .control { width: 74px; text-align: right; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 10px 10px; border-bottom: 1px solid var(--border); }
+  .chip {
+    all: unset; cursor: pointer; font-size: 12px; padding: 4px 10px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+  }
+  .chip:hover { border-color: var(--border-strong); color: var(--text-2); }
+  .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .chip[aria-pressed="true"] { color: var(--text); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  td.gap { font-weight: 650; }
+  td.gap.big { color: var(--warn); }
+  td .side { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  tr.venues-row { cursor: default; }
+  tr.venues-row td { background: var(--surface-2); white-space: normal; height: auto; }
+  tr.venues-row:hover td { background: var(--surface-2); }
+  .venue-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0; }
+  .venue-btn {
+    all: unset; cursor: pointer; display: inline-flex; gap: 8px; align-items: baseline;
+    font-size: 12px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface);
+  }
+  .venue-btn:hover { border-color: var(--border-strong); }
+  .venue-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .venue-btn .k { color: var(--muted); }
+  .venue-btn .v { font-weight: 600; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -408,6 +436,55 @@
     <div class="health" id="health">
       <div class="health-skel"></div><div class="health-skel"></div><div class="health-skel"></div>
       <div class="health-skel"></div><div class="health-skel"></div><div class="health-skel"></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="gaps-h" id="gaps">
+    <div class="section-head">
+      <h2 id="gaps-h">Price gaps between exchanges</h2>
+      <span class="section-note" id="gaps-note"></span>
+    </div>
+    <div class="card">
+      <div class="toolbar gaps-controls">
+        <div class="search">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+          <label for="gaps-search" class="sr-only">Search token</label>
+          <input id="gaps-search" class="control" type="search" placeholder="Search token" autocomplete="off" autocapitalize="characters" spellcheck="false">
+        </div>
+        <div class="select-wrap">
+          <label for="gaps-price" class="sr-only">Price to compare</label>
+          <select id="gaps-price" class="control">
+            <option value="last">Last trade</option>
+            <option value="mark">Mark price</option>
+          </select>
+        </div>
+        <div class="num-wrap">
+          <label for="gaps-max">Hide at</label>
+          <input id="gaps-max" class="control" type="number" min="0.1" max="100" step="0.5" value="10" inputmode="decimal">
+          <span>% or more</span>
+        </div>
+      </div>
+      <div class="chips" id="gaps-ex" role="group" aria-label="Exchanges to compare"></div>
+      <div class="table-meta" aria-live="polite">
+        <span id="gaps-count">Loading gaps</span>
+        <span id="gaps-updated"></span>
+      </div>
+      <div class="table-wrap gaps-wrap">
+        <table>
+          <caption class="sr-only">Tokens with the largest price difference between exchanges. Select a row to see every exchange's price.</caption>
+          <thead>
+            <tr>
+              <th>Token</th>
+              <th class="num">Gap</th>
+              <th>Cheapest</th>
+              <th>Dearest</th>
+              <th class="num">Venues</th>
+              <th class="num">Oldest price</th>
+            </tr>
+          </thead>
+          <tbody id="gaps-rows"></tbody>
+        </table>
+      </div>
     </div>
   </section>
 
@@ -497,7 +574,7 @@
     </section>
   </div>
 
-  <footer>Prices every 2 s, feed health every 3 s, open chart every 5 s. Stale means no tick for more than 10 s.</footer>
+  <footer>Prices every 2 s, gaps every 3 s, feed health every 3 s, open chart every 5 s. Stale means no tick for more than 10 s.</footer>
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
@@ -1268,6 +1345,126 @@
     }
   }
 
+  // ---------- Price gaps ----------
+
+  var GAPS_POLL_MS = 3000;
+  var GAP_EXCHANGES = ["binance_futures", "gate_futures", "bybit_futures", "kucoin_futures", "aster_futures", "hyperliquid"];
+  var GAPS_KEY = "pd-gaps-v1";
+  var gaps = { rows: [], data: null, error: null, open: null, ex: GAP_EXCHANGES.slice(), price: "last", max: 10 };
+  try {
+    var saved = JSON.parse(localStorage.getItem(GAPS_KEY) || "null");
+    if (saved) {
+      if (Array.isArray(saved.ex)) gaps.ex = saved.ex.filter(function (e) { return GAP_EXCHANGES.indexOf(e) !== -1; });
+      if (saved.price === "mark") gaps.price = "mark";
+      if (isNum(saved.max) && saved.max > 0) gaps.max = saved.max;
+    }
+  } catch (e) { /* storage unavailable */ }
+  $("gaps-price").value = gaps.price;
+  $("gaps-max").value = String(gaps.max);
+  function saveGaps() {
+    try { localStorage.setItem(GAPS_KEY, JSON.stringify({ ex: gaps.ex, price: gaps.price, max: gaps.max })); } catch (e) { /* ignore */ }
+  }
+
+  function renderGapChips() {
+    $("gaps-ex").innerHTML = GAP_EXCHANGES.map(function (n) {
+      var on = gaps.ex.indexOf(n) !== -1;
+      return '<button type="button" class="chip" data-ex="' + esc(n) + '" aria-pressed="' + on + '">' + esc(exLabel(n)) + "</button>";
+    }).join("");
+  }
+  $("gaps-ex").addEventListener("click", function (ev) {
+    var b = ev.target.closest(".chip");
+    if (!b) return;
+    var n = b.dataset.ex, i = gaps.ex.indexOf(n);
+    if (i === -1) gaps.ex.push(n); else gaps.ex.splice(i, 1);
+    saveGaps();
+    renderGapChips();
+    refreshGaps();
+  });
+  $("gaps-price").addEventListener("change", function () { gaps.price = this.value === "mark" ? "mark" : "last"; saveGaps(); refreshGaps(); });
+  $("gaps-max").addEventListener("change", function () {
+    var v = parseFloat(this.value);
+    if (!isNum(v) || v <= 0) { this.value = String(gaps.max); return; }
+    gaps.max = v; saveGaps(); refreshGaps();
+  });
+  $("gaps-search").addEventListener("input", renderGaps);
+
+  function fmtGap(v) { return isNum(v) ? v.toFixed(v < 1 ? 3 : 2) + "%" : "-"; }
+
+  function renderGaps() {
+    var body = $("gaps-rows");
+    var q = $("gaps-search").value.trim().toUpperCase().replace(/[\s\/\-_]|USDT$/g, "");
+    var rows = gaps.rows.filter(function (g) { return !q || g.token.indexOf(q) !== -1; });
+    var html = rows.map(function (g) {
+      var oldest = Math.max.apply(null, g.venues.map(function (v) { return v.age_seconds; }));
+      var isOpen = gaps.open === g.token;
+      var row =
+        '<tr tabindex="0" data-t="' + esc(g.token) + '" aria-expanded="' + isOpen + '"' + (isOpen ? ' class="selected"' : "") + ">" +
+        '<td class="sym"><span class="base">' + esc(g.token) + "</span></td>" +
+        '<td class="num gap' + (g.gap_pct >= 2 ? " big" : "") + '">' + fmtGap(g.gap_pct) + "</td>" +
+        '<td class="ex">' + esc(exLabel(g.low.exchange)) + '<span class="side">' + fmtPrice(g.low.price) + "</span></td>" +
+        '<td class="ex">' + esc(exLabel(g.high.exchange)) + '<span class="side">' + fmtPrice(g.high.price) + "</span></td>" +
+        '<td class="num">' + g.venues.length + "</td>" +
+        '<td class="num age' + (oldest > 30 ? " stale" : "") + '">' + fmtAge(oldest) + "</td></tr>";
+      if (isOpen) {
+        row += '<tr class="venues-row"><td colspan="6"><div class="venue-list">' + g.venues.map(function (v) {
+          var diff = (v.price / g.low.price - 1) * 100;
+          return '<button type="button" class="venue-btn" data-sym="' + esc(v.symbol) + '" data-ex="' + esc(v.exchange) + '" title="Open the ' + esc(v.symbol) + ' chart">' +
+            '<span class="k">' + esc(exLabel(v.exchange)) + "</span>" +
+            '<span class="v">' + fmtPrice(v.price) + "</span>" +
+            '<span class="k">' + (diff > 0 ? "+" + fmtGap(diff) : "lowest") + " · " + fmtAge(v.age_seconds) + "</span></button>";
+        }).join("") + "</div></td></tr>";
+      }
+      return row;
+    }).join("");
+    preserveFocus(body, "data-t", function () {
+      body.innerHTML = html || '<tr class="empty-row"><td colspan="6" class="empty">' +
+        esc(gaps.error ? gaps.error : !gaps.data ? "Waiting for prices." : gaps.ex.length < 2 ? "Pick at least two exchanges." : gaps.rows.length ? "No token matches this search." : "No gaps right now.") + "</td></tr>";
+    });
+    var d = gaps.data;
+    $("gaps-count").textContent = !d ? (gaps.error ? "Gaps unavailable" : "Loading gaps")
+      : (q ? intNf.format(rows.length) + " matching, " : "") +
+        (d.rows.length < d.total ? "top " + intNf.format(d.rows.length) + " of " : "") + intNf.format(d.total) + " tokens below " + d.max_pct + "%";
+    $("gaps-note").textContent = d ? intNf.format(d.compared) + " tokens on 2+ exchanges, " + intNf.format(d.hidden) +
+      " hidden at " + d.max_pct + "%+ (likely another project with the same ticker)" : "";
+  }
+
+  $("gaps-rows").addEventListener("click", function (ev) {
+    var v = ev.target.closest(".venue-btn");
+    if (v) { openChart(v.dataset.sym, v.dataset.ex); return; }
+    var tr = ev.target.closest("tr[data-t]");
+    if (!tr) return;
+    gaps.open = gaps.open === tr.dataset.t ? null : tr.dataset.t;
+    renderGaps();
+  });
+  $("gaps-rows").addEventListener("keydown", function (ev) {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    var tr = ev.target.closest("tr[data-t]");
+    if (!tr || ev.target !== tr) return;
+    ev.preventDefault();
+    gaps.open = gaps.open === tr.dataset.t ? null : tr.dataset.t;
+    renderGaps();
+  });
+
+  async function pollGaps() {
+    if (gaps.ex.length < 2) { gaps.rows = []; gaps.data = null; gaps.error = null; renderGaps(); return; }
+    var url = "/ui/api/gaps?limit=300&price=" + gaps.price + "&max_pct=" + encodeURIComponent(gaps.max) +
+      "&exchanges=" + encodeURIComponent(gaps.ex.join(","));
+    try {
+      var d = await getJSON(url);
+      if (!d || !Array.isArray(d.rows)) throw new Error("Unexpected response from the server.");
+      gaps.data = d; gaps.rows = d.rows; gaps.error = null;
+      $("gaps-updated").textContent = "Updated " + new Date().toLocaleTimeString();
+      $("gaps-updated").classList.remove("err");
+    } catch (e) {
+      gaps.error = e.message;
+      $("gaps-updated").textContent = e.message;
+      $("gaps-updated").classList.add("err");
+    }
+    renderGaps();
+  }
+  var refreshGaps = poller(pollGaps, GAPS_POLL_MS, true);
+  renderGapChips();
+
   // ---------- Start ----------
 
   setInterval(function () { if (state.overview) $("uptime-v").textContent = fmtUptime(state.overview.uptime_seconds); }, 30000);
@@ -1278,6 +1475,7 @@
     poller(pollOverview, OVERVIEW_POLL_MS, false)();
     poller(pollPrices, PRICE_POLL_MS, true)();
     poller(pollAlerts, ALERTS_POLL_MS, true)();
+    refreshGaps();
   });
 })();
 </script>

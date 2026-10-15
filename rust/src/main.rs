@@ -9,6 +9,7 @@ mod backfill;
 mod candles;
 mod config;
 mod feeds;
+mod gaps;
 mod http;
 mod hub;
 mod marks;
