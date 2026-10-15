@@ -301,8 +301,8 @@ impl Store {
         }
     }
 
-    /// Store candles fetched from an exchange where we have none (candles
-    /// we built ourselves win).
+    /// Store closed candles fetched from an exchange. They replace ours for
+    /// the same bucket: ours can be partial after a restart or reconnect.
     pub async fn insert_missing(
         &self,
         symbol: &str,
@@ -316,7 +316,7 @@ impl Store {
                 self.candles
                     .update_one(
                         doc! {"symbol": symbol, "exchange": exchange, "interval": interval.as_str(), "timestamp": ts},
-                        doc! {"$setOnInsert": {"symbol": symbol, "exchange": exchange, "interval": interval.as_str(),
+                        doc! {"$set": {"symbol": symbol, "exchange": exchange, "interval": interval.as_str(),
                               "open": b.open, "high": b.high, "low": b.low, "close": b.close,
                               "timestamp": ts, "volume": b.volume}},
                     )

@@ -55,10 +55,22 @@ const PUSH_EVERY: Duration = Duration::from_millis(250);
 const BACKFILL_EVERY: Duration = Duration::from_secs(60);
 /// How long a chart request waits for one of the backfill slots.
 const BACKFILL_WAIT: Duration = Duration::from_secs(10);
-/// Per IP: sustained requests per second, burst, and open sockets.
-const RATE: f64 = 10.0;
-const BURST: f64 = 40.0;
-const SOCKETS_PER_IP: usize = 10;
+/// A chart the exchange could not fill is not asked again for about this
+/// long (stored as a future time in `backfilled`, kept until a minute after).
+const QUIET_BACKFILL: Duration = Duration::from_secs(29 * 60);
+/// Browser limits per signed-in user: requests per second, burst, open
+/// sockets. Per IP the limits are much looser, because phones on one mobile
+/// carrier often share an address (carrier NAT).
+const USER_RATE: f64 = 10.0;
+const USER_BURST: f64 = 40.0;
+const SOCKETS_PER_USER: usize = 5;
+const IP_RATE: f64 = 100.0;
+const IP_BURST: f64 = 400.0;
+const SOCKETS_PER_IP: usize = 200;
+/// The server pings every socket this often and drops one silent for
+/// `IDLE_DROP` (a phone that went offline frees its slot).
+const SERVER_PING: Duration = Duration::from_secs(20);
+const IDLE_DROP: Duration = Duration::from_secs(60);
 
 type AppState = State<Arc<App>>;
 
@@ -68,8 +80,8 @@ type AppState = State<Arc<App>>;
 pub enum Caller {
     /// The server API key: no rate limit.
     Server,
-    /// A browser token until `exp`.
-    User { exp: i64 },
+    /// A browser token for user `sub` until `exp`.
+    User { sub: String, exp: i64 },
 }
 
 fn err(status: StatusCode, detail: impl Into<String>) -> Response {
@@ -108,7 +120,10 @@ pub fn caller(
     let Some(secret) = &app.cfg.prices_token_secret else {
         return Err("browser tokens are not enabled");
     };
-    token::verify(secret, t, Utc::now().timestamp()).map(|c| Caller::User { exp: c.exp })
+    token::verify(secret, t, Utc::now().timestamp()).map(|c| Caller::User {
+        sub: c.sub,
+        exp: c.exp,
+    })
 }
 
 /// Client IP: the last X-Forwarded-For entry (added by our Caddy), else
@@ -128,7 +143,7 @@ struct Bucket {
     at: Instant,
 }
 
-/// Token buckets and socket counts per IP.
+/// Token buckets and socket counts per key (`u:<user>` or `ip:<address>`).
 #[derive(Default)]
 pub struct Limits {
     buckets: Mutex<HashMap<String, Bucket>>,
@@ -136,16 +151,16 @@ pub struct Limits {
 }
 
 impl Limits {
-    pub fn allow(&self, ip: &str, now: Instant) -> bool {
+    pub fn allow(&self, key: &str, rate: f64, burst: f64, now: Instant) -> bool {
         let mut b = self.buckets.lock();
         if b.len() > 50_000 {
             b.retain(|_, x| now.duration_since(x.at) < Duration::from_secs(60));
         }
-        let x = b.entry(ip.to_string()).or_insert(Bucket {
-            tokens: BURST,
+        let x = b.entry(key.to_string()).or_insert(Bucket {
+            tokens: burst,
             at: now,
         });
-        x.tokens = (x.tokens + now.duration_since(x.at).as_secs_f64() * RATE).min(BURST);
+        x.tokens = (x.tokens + now.duration_since(x.at).as_secs_f64() * rate).min(burst);
         x.at = now;
         if x.tokens >= 1.0 {
             x.tokens -= 1.0;
@@ -155,24 +170,48 @@ impl Limits {
         }
     }
 
-    pub fn open_socket(&self, ip: &str) -> bool {
+    pub fn open_socket(&self, key: &str, max: usize) -> bool {
         let mut s = self.sockets.lock();
-        let n = s.entry(ip.to_string()).or_default();
-        if *n >= SOCKETS_PER_IP {
+        let n = s.entry(key.to_string()).or_default();
+        if *n >= max {
             return false;
         }
         *n += 1;
         true
     }
 
-    pub fn close_socket(&self, ip: &str) {
+    pub fn close_socket(&self, key: &str) {
         let mut s = self.sockets.lock();
-        if let Some(n) = s.get_mut(ip) {
+        if let Some(n) = s.get_mut(key) {
             *n = n.saturating_sub(1);
             if *n == 0 {
-                s.remove(ip);
+                s.remove(key);
             }
         }
+    }
+
+    /// A browser request: within both its user's and its address's budget.
+    pub fn allow_user(&self, sub: &str, ip: &str, now: Instant) -> bool {
+        self.allow(&format!("ip:{ip}"), IP_RATE, IP_BURST, now)
+            && self.allow(&format!("u:{sub}"), USER_RATE, USER_BURST, now)
+    }
+
+    /// Opens a browser socket for a user and address, or neither.
+    pub fn open_user_socket(&self, sub: &str, ip: &str) -> bool {
+        let (u, i) = (format!("u:{sub}"), format!("ip:{ip}"));
+        if !self.open_socket(&i, SOCKETS_PER_IP) {
+            return false;
+        }
+        if !self.open_socket(&u, SOCKETS_PER_USER) {
+            self.close_socket(&i);
+            return false;
+        }
+        true
+    }
+
+    pub fn close_user_socket(&self, sub: &str, ip: &str) {
+        self.close_socket(&format!("u:{sub}"));
+        self.close_socket(&format!("ip:{ip}"));
     }
 }
 
@@ -189,8 +228,13 @@ async fn guard(State(app): AppState, req: Request, next: Next) -> Response {
         Ok(c) => c,
         Err(e) => return err(StatusCode::UNAUTHORIZED, e),
     };
-    if who != Caller::Server && !app.limits.allow(&client_ip(req.headers()), Instant::now()) {
-        return err(StatusCode::TOO_MANY_REQUESTS, "slow down");
+    if let Caller::User { sub, .. } = &who {
+        if !app
+            .limits
+            .allow_user(sub, &client_ip(req.headers()), Instant::now())
+        {
+            return err(StatusCode::TOO_MANY_REQUESTS, "slow down");
+        }
     }
     next.run(req).await
 }
@@ -228,7 +272,17 @@ fn ms(t: DateTime<Utc>) -> i64 {
 }
 
 /// One market's price as /v1 serves it.
+/// Prices older than this are served as missing (a halted or delisted
+/// market keeps its last tick forever otherwise).
+const STALE_AFTER_SECS: i64 = 600;
+
 pub fn price_value(ex: &str, sym: &str, l: Option<Latest>, q: Quote, now: DateTime<Utc>) -> Value {
+    let fresh = |t: DateTime<Utc>| (now - t).num_seconds() <= STALE_AFTER_SECS;
+    let l = l.filter(|l| fresh(l.timestamp));
+    let q = Quote {
+        last: q.last.filter(|x| fresh(x.1)),
+        mark: q.mark.filter(|x| fresh(x.1)),
+    };
     let newest = [
         l.map(|l| l.timestamp),
         q.last.map(|x| x.1),
@@ -266,15 +320,12 @@ async fn markets(State(app): AppState, Query(q): Query<MarketsQuery>) -> Respons
     if let Some(sym) = q.symbol.as_deref() {
         let sym = norm(sym);
         let hub = app.hub.lock();
-        let now = Utc::now();
         let rows: Vec<Value> = app
             .markets
             .exchanges_for(&sym)
             .into_iter()
             .map(|(ex, info)| {
-                let priced = hub
-                    .latest(ex, &sym)
-                    .is_some_and(|l| (now - l.timestamp).num_seconds() < 300);
+                let priced = hub.priced(ex, std::iter::once(&sym), 300) > 0;
                 json!({"exchange": ex, "symbol": sym, "venue_symbol": info.venue_symbol, "priced": priced,
                        "market": if crate::feeds::is_spot(ex) { "spot" } else { "futures" }})
             })
@@ -388,7 +439,71 @@ pub fn venue_symbol(app: &App, ex: &str, sym: &str) -> String {
 }
 
 /// Candles for a chart, oldest first, plus where they came from.
+/// The built interval 45m, 2h and 4h are made from.
+fn base_of(interval: Interval) -> Option<Interval> {
+    match interval {
+        Interval::M45 => Some(Interval::M15),
+        Interval::H2 | Interval::H4 => Some(Interval::H1),
+        _ => None,
+    }
+}
+
+/// Bars of `base` into `interval` buckets; a leading bucket we only have
+/// part of is dropped.
+fn aggregate_bars(base: &[Bar], base_secs: i64, interval: Interval) -> Vec<Bar> {
+    let mut out: Vec<Bar> = Vec::new();
+    let secs = interval.seconds();
+    for b in base {
+        let start = b.start.div_euclid(secs) * secs;
+        match out.last_mut() {
+            Some(o) if o.start == start => {
+                o.high = o.high.max(b.high);
+                o.low = o.low.min(b.low);
+                o.close = b.close;
+                o.volume += b.volume;
+            }
+            _ => out.push(Bar { start, ..*b }),
+        }
+    }
+    if let (Some(first), Some(b0)) = (out.first(), base.first()) {
+        if b0.start > first.start && b0.start - first.start >= base_secs {
+            out.remove(0);
+        }
+    }
+    out
+}
+
+/// Candles for a chart, oldest first, plus whether the exchange filled gaps.
+/// 45m, 2h and 4h (not built from ticks) come from 15m or 1h candles.
 pub async fn candle_series(
+    app: &Arc<App>,
+    ex: &str,
+    sym: &str,
+    interval: Interval,
+    limit: i64,
+    end: Option<i64>,
+    allow_backfill: bool,
+) -> (Vec<Bar>, bool) {
+    let Some(base) = base_of(interval) else {
+        return built_series(app, ex, sym, interval, limit, end, allow_backfill).await;
+    };
+    let factor = interval.seconds() / base.seconds();
+    let (bars, backfilled) = built_series(
+        app,
+        ex,
+        sym,
+        base,
+        (limit.clamp(1, MAX_LIMIT) * factor + factor).min(MAX_LIMIT),
+        end,
+        allow_backfill,
+    )
+    .await;
+    let mut out = aggregate_bars(&bars, base.seconds(), interval);
+    let skip = out.len().saturating_sub(limit.clamp(1, MAX_LIMIT) as usize);
+    (out.split_off(skip), backfilled)
+}
+
+async fn built_series(
     app: &Arc<App>,
     ex: &str,
     sym: &str,
@@ -458,15 +573,29 @@ pub async fn candle_series(
                                 app.store.insert_missing(sym, ex, interval, &to_store).await;
                             }
                         }
+                        // The exchange's closed candles win: ours can be
+                        // partial (built from the first tick after a restart
+                        // or reconnect).
                         let mut by_start: BTreeMap<i64, Bar> =
-                            fetched.into_iter().map(|b| (b.start, b)).collect();
-                        for b in bars {
-                            by_start.insert(b.start, b);
+                            bars.into_iter().map(|b| (b.start, b)).collect();
+                        for b in fetched {
+                            if b.start < open_bucket {
+                                by_start.insert(b.start, b);
+                            } else {
+                                by_start.entry(b.start).or_insert(b);
+                            }
                         }
                         bars = by_start.into_values().collect();
                     }
                     Ok(_) => {}
                     Err(e) => tracing::warn!("backfill {ex} {sym} {}: {e}", interval.as_str()),
+                }
+                // Still thin after asking: the exchange has nothing older (a
+                // new listing, a gappy venue). Don't ask again for a while.
+                if (bars.len() as f64) < 0.9 * limit as f64 {
+                    app.backfilled
+                        .lock()
+                        .insert(key.clone(), Instant::now() + QUIET_BACKFILL);
                 }
             } else {
                 // No slot in time: let the next request for this chart try.
@@ -554,15 +683,29 @@ async fn stream(
         Err(e) => return err(StatusCode::UNAUTHORIZED, e),
     };
     let ip = client_ip(&headers);
-    if who != Caller::Server && !app.limits.open_socket(&ip) {
-        return err(StatusCode::TOO_MANY_REQUESTS, "too many connections");
-    }
-    ws.on_upgrade(move |socket| async move {
-        client(app.clone(), socket, who.clone()).await;
-        if who != Caller::Server {
-            app.limits.close_socket(&ip);
+    let user = match &who {
+        Caller::User { sub, .. } => Some(sub.clone()),
+        Caller::Server => None,
+    };
+    if let Some(sub) = &user {
+        if !app.limits.open_user_socket(sub, &ip) {
+            return err(StatusCode::TOO_MANY_REQUESTS, "too many connections");
         }
-    })
+    }
+    let release = {
+        let (app, ip, user) = (app.clone(), ip.clone(), user.clone());
+        move || {
+            if let Some(sub) = &user {
+                app.limits.close_user_socket(sub, &ip);
+            }
+        }
+    };
+    let on_fail = release.clone();
+    ws.on_failed_upgrade(move |_| on_fail())
+        .on_upgrade(move |socket| async move {
+            client(app.clone(), socket, who.clone()).await;
+            release();
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -629,11 +772,24 @@ async fn client(app: Arc<App>, socket: WebSocket, who: Caller) {
     // What was last sent per subscription, to push only changes.
     let mut sent: HashMap<Sub, Value> = HashMap::new();
     let mut push = tokio::time::interval(PUSH_EVERY);
+    let mut ping = tokio::time::interval(SERVER_PING);
+    ping.reset();
+    let mut heard = Instant::now();
+    let server = who == Caller::Server;
     let mut out: Vec<String> = Vec::new();
     'conn: loop {
         tokio::select! {
+            _ = ping.tick() => {
+                if heard.elapsed() > IDLE_DROP {
+                    break 'conn;
+                }
+                if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break 'conn;
+                }
+            }
             frame = stream.next() => {
                 let Some(Ok(msg)) = frame else { break };
+                heard = Instant::now();
                 let text = match msg {
                     Message::Text(t) => t.to_string(),
                     Message::Close(_) => break,
@@ -656,11 +812,16 @@ async fn client(app: Arc<App>, socket: WebSocket, who: Caller) {
                                         out.push(json!({"type": "error", "message": format!("at most {MAX_SUBS} subscriptions")}).to_string());
                                         break;
                                     }
-                                    if subs.insert(s.clone()) {
+                                    // Only servers may make a venue stream a
+                                    // market its list doesn't have yet;
+                                    // browsers read listed markets only.
+                                    if subs.insert(s.clone()) && server {
                                         hub.watch(&s.market());
                                     }
                                 } else if subs.remove(&s) {
-                                    hub.unwatch(&s.market());
+                                    if server {
+                                        hub.unwatch(&s.market());
+                                    }
                                     sent.remove(&s);
                                 }
                                 done.push(s);
@@ -685,8 +846,8 @@ async fn client(app: Arc<App>, socket: WebSocket, who: Caller) {
                 }
             }
             _ = push.tick() => {
-                if let Caller::User { exp } = who {
-                    if Utc::now().timestamp() >= exp {
+                if let Caller::User { exp, .. } = &who {
+                    if Utc::now().timestamp() >= *exp {
                         let _ = sink.send(Message::text(json!({"type": "expired"}).to_string())).await;
                         break 'conn;
                     }
@@ -728,7 +889,7 @@ async fn client(app: Arc<App>, socket: WebSocket, who: Caller) {
             }
         }
     }
-    {
+    if server {
         let mut hub = app.hub.lock();
         for s in &subs {
             hub.unwatch(&s.market());
@@ -745,23 +906,25 @@ mod tests {
     fn rate_limit_refills() {
         let l = Limits::default();
         let t = Instant::now();
-        for _ in 0..BURST as usize {
-            assert!(l.allow("1.2.3.4", t));
+        for _ in 0..USER_BURST as usize {
+            assert!(l.allow_user("u1", "1.2.3.4", t));
         }
-        assert!(!l.allow("1.2.3.4", t));
-        assert!(l.allow("5.6.7.8", t));
-        assert!(l.allow("1.2.3.4", t + Duration::from_millis(200)));
+        assert!(!l.allow_user("u1", "1.2.3.4", t));
+        // Another user behind the same carrier address is not blocked.
+        assert!(l.allow_user("u2", "1.2.3.4", t));
+        assert!(l.allow_user("u1", "1.2.3.4", t + Duration::from_millis(200)));
     }
 
     #[test]
     fn sockets_per_ip() {
         let l = Limits::default();
-        for _ in 0..SOCKETS_PER_IP {
-            assert!(l.open_socket("ip"));
+        for _ in 0..SOCKETS_PER_USER {
+            assert!(l.open_user_socket("u1", "ip"));
         }
-        assert!(!l.open_socket("ip"));
-        l.close_socket("ip");
-        assert!(l.open_socket("ip"));
+        assert!(!l.open_user_socket("u1", "ip"));
+        assert!(l.open_user_socket("u2", "ip"));
+        l.close_user_socket("u1", "ip");
+        assert!(l.open_user_socket("u1", "ip"));
     }
 
     #[test]
@@ -804,6 +967,52 @@ mod tests {
         )
         .unwrap();
         assert!(parse_subs(&bad).is_err());
+    }
+
+    #[test]
+    fn four_hours_from_hourly_bars() {
+        let h = 3600;
+        let t0 = 1_791_000_000 - 1_791_000_000 % (4 * h);
+        // Starts one hour into a 4h bucket: that partial bucket is dropped.
+        let base: Vec<Bar> = (1..9)
+            .map(|i| Bar {
+                start: t0 + i * h,
+                open: i as f64,
+                high: i as f64 + 0.5,
+                low: i as f64 - 0.5,
+                close: i as f64 + 0.1,
+                volume: 1.0,
+            })
+            .collect();
+        let out = aggregate_bars(&base, h, Interval::H4);
+        // The newest bucket (hour 8) may still be open, so it stays.
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].start, t0 + 4 * h);
+        assert_eq!(
+            (
+                out[0].open,
+                out[0].high,
+                out[0].low,
+                out[0].close,
+                out[0].volume
+            ),
+            (4.0, 7.5, 3.5, 7.1, 4.0)
+        );
+        assert_eq!(base_of(Interval::M45), Some(Interval::M15));
+        assert_eq!(base_of(Interval::H1), None);
+    }
+
+    #[test]
+    fn stale_prices_are_missing() {
+        let now = Utc::now();
+        let old = now - chrono::Duration::seconds(STALE_AFTER_SECS + 5);
+        let q = Quote {
+            last: Some((2.0, old)),
+            mark: Some((1.9, now)),
+        };
+        let v = price_value("bybit_futures", "XUSDT", None, q, now);
+        assert_eq!(v["last"], Value::Null);
+        assert_eq!(v["mark"], json!(1.9));
     }
 
     #[test]
