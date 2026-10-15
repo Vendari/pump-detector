@@ -18,6 +18,14 @@
 //! - Hyperliquid `POST api.hyperliquid.xyz/info` `candleSnapshot`: oldest
 //!   first, only the latest ~5000 candles; volume is in coins. An unknown
 //!   coin is HTTP 500 with body `null`.
+//! - Spot (checked live 2026-10-15): Binance `GET api.binance.com/api/v3/klines`
+//!   (as futures, up to 1000); Bybit `/v5/market/kline?category=spot`; Gate
+//!   `GET /api/v4/spot/candlesticks?currency_pair=`: oldest first, up to 1000,
+//!   rows `[t, quote volume, close, high, low, open, base volume, closed]`, no
+//!   30s, unknown pair is HTTP 400 `INVALID_CURRENCY_PAIR`; KuCoin
+//!   `GET api.kucoin.com/api/v1/market/candles?type=1min&symbol=BTC-USDT`
+//!   (seconds): newest first, up to 1500, rows `[t, open, close, high, low,
+//!   volume, turnover]`, unknown pair is code 400100.
 //!
 //! Intervals a venue lacks are built from the largest native interval that
 //! divides them, into our epoch-aligned buckets (1W always from 1D, since
@@ -58,6 +66,10 @@ enum Venue {
     Bybit,
     Kucoin,
     Hyperliquid,
+    BinanceSpot,
+    BybitSpot,
+    GateSpot,
+    KucoinSpot,
 }
 
 /// Native intervals in seconds with the venue's name for them. Only
@@ -118,6 +130,31 @@ const KUCOIN_INTERVALS: &[(i64, &str)] = &[
     (43200, "720"),
     (86400, "1440"),
 ];
+const GATE_SPOT_INTERVALS: &[(i64, &str)] = &[
+    (10, "10s"),
+    (60, "1m"),
+    (300, "5m"),
+    (900, "15m"),
+    (1800, "30m"),
+    (3600, "1h"),
+    (14400, "4h"),
+    (28800, "8h"),
+    (86400, "1d"),
+];
+const KUCOIN_SPOT_INTERVALS: &[(i64, &str)] = &[
+    (60, "1min"),
+    (180, "3min"),
+    (300, "5min"),
+    (900, "15min"),
+    (1800, "30min"),
+    (3600, "1hour"),
+    (7200, "2hour"),
+    (14400, "4hour"),
+    (21600, "6hour"),
+    (28800, "8hour"),
+    (43200, "12hour"),
+    (86400, "1day"),
+];
 const HYPERLIQUID_INTERVALS: &[(i64, &str)] = &[
     (60, "1m"),
     (180, "3m"),
@@ -141,17 +178,23 @@ impl Venue {
             "bybit_futures" => Venue::Bybit,
             "kucoin_futures" => Venue::Kucoin,
             "hyperliquid" => Venue::Hyperliquid,
+            "binance_spot" => Venue::BinanceSpot,
+            "bybit_spot" => Venue::BybitSpot,
+            "gate_spot" => Venue::GateSpot,
+            "kucoin_spot" => Venue::KucoinSpot,
             _ => return None,
         })
     }
 
     fn intervals(self) -> &'static [(i64, &'static str)] {
         match self {
-            Venue::Binance | Venue::Aster => BINANCE_INTERVALS,
+            Venue::Binance | Venue::Aster | Venue::BinanceSpot => BINANCE_INTERVALS,
             Venue::Gate => GATE_INTERVALS,
-            Venue::Bybit => BYBIT_INTERVALS,
+            Venue::Bybit | Venue::BybitSpot => BYBIT_INTERVALS,
             Venue::Kucoin => KUCOIN_INTERVALS,
             Venue::Hyperliquid => HYPERLIQUID_INTERVALS,
+            Venue::GateSpot => GATE_SPOT_INTERVALS,
+            Venue::KucoinSpot => KUCOIN_SPOT_INTERVALS,
         }
     }
 
@@ -160,9 +203,11 @@ impl Venue {
         match self {
             Venue::Binance | Venue::Aster => 1500,
             Venue::Gate => 2000,
-            Venue::Bybit => 1000,
+            Venue::Bybit | Venue::BybitSpot => 1000,
             Venue::Kucoin => 200,
             Venue::Hyperliquid => 5000,
+            Venue::BinanceSpot | Venue::GateSpot => 1000,
+            Venue::KucoinSpot => 1500,
         }
     }
 
@@ -188,19 +233,23 @@ impl Venue {
 
     fn parse(self, status: u16, body: &str) -> Result<Vec<RawCandle>, String> {
         match self {
-            Venue::Binance | Venue::Aster => parse_binance(status, body),
+            Venue::Binance | Venue::Aster | Venue::BinanceSpot => parse_binance(status, body),
             Venue::Gate => parse_gate(status, body),
-            Venue::Bybit => parse_bybit(status, body),
+            Venue::Bybit | Venue::BybitSpot => parse_bybit(status, body),
             Venue::Kucoin => parse_kucoin(status, body),
             Venue::Hyperliquid => parse_hyperliquid(status, body),
+            Venue::GateSpot => parse_gate_spot(status, body),
+            Venue::KucoinSpot => parse_kucoin_spot(status, body),
         }
     }
 }
 
 /// Candles with start in [from, to] (unix seconds, inclusive), oldest first, at most `max` (newest kept when trimming).
-/// `exchange` is one of: binance_futures, gate_futures, bybit_futures, kucoin_futures, aster_futures, hyperliquid.
+/// `exchange` is one of: binance_futures, gate_futures, bybit_futures, kucoin_futures, aster_futures, hyperliquid,
+/// binance_spot, bybit_spot, gate_spot, kucoin_spot.
 /// `venue_symbol` is the exchange's own instrument id, already mapped by the caller:
-///   binance/bybit/aster: "BTCUSDT"; gate: "BTC_USDT"; kucoin: "XBTUSDTM"; hyperliquid: coin as listed, case-sensitive, e.g. "BTC", "kPEPE".
+///   binance/bybit/aster: "BTCUSDT"; gate: "BTC_USDT"; kucoin: "XBTUSDTM"; hyperliquid: coin as listed, case-sensitive, e.g. "BTC", "kPEPE";
+///   spot: "BTCUSDT" (Binance, Bybit), "BTC_USDT" (Gate), "BTC-USDT" (KuCoin).
 pub async fn fetch(
     http: &reqwest::Client,
     exchange: &str,
@@ -305,13 +354,13 @@ async fn request(
 ) -> Result<(u16, String), String> {
     let (start_ms, end_ms) = (start * 1000, end * 1000);
     let req = match venue {
-        Venue::Binance | Venue::Aster => {
-            let host = if venue == Venue::Binance {
-                "https://fapi.binance.com"
-            } else {
-                "https://fapi.asterdex.com"
+        Venue::Binance | Venue::Aster | Venue::BinanceSpot => {
+            let url = match venue {
+                Venue::Binance => "https://fapi.binance.com/fapi/v1/klines",
+                Venue::Aster => "https://fapi.asterdex.com/fapi/v1/klines",
+                _ => "https://api.binance.com/api/v3/klines",
             };
-            http.get(format!("{host}/fapi/v1/klines")).query(&[
+            http.get(url).query(&[
                 ("symbol", symbol.to_string()),
                 ("interval", interval.to_string()),
                 ("startTime", start_ms.to_string()),
@@ -327,14 +376,24 @@ async fn request(
                 ("from", start.to_string()),
                 ("to", end.to_string()),
             ]),
-        Venue::Bybit => http.get("https://api.bybit.com/v5/market/kline").query(&[
-            ("category", "linear".to_string()),
-            ("symbol", symbol.to_string()),
-            ("interval", interval.to_string()),
-            ("start", start_ms.to_string()),
-            ("end", end_ms.to_string()),
-            ("limit", venue.page_size().to_string()),
-        ]),
+        Venue::Bybit | Venue::BybitSpot => {
+            http.get("https://api.bybit.com/v5/market/kline").query(&[
+                (
+                    "category",
+                    if venue == Venue::Bybit {
+                        "linear"
+                    } else {
+                        "spot"
+                    }
+                    .to_string(),
+                ),
+                ("symbol", symbol.to_string()),
+                ("interval", interval.to_string()),
+                ("start", start_ms.to_string()),
+                ("end", end_ms.to_string()),
+                ("limit", venue.page_size().to_string()),
+            ])
+        }
         Venue::Kucoin => http
             .get("https://api-futures.kucoin.com/api/v1/kline/query")
             .query(&[
@@ -342,6 +401,22 @@ async fn request(
                 ("granularity", interval.to_string()),
                 ("from", start_ms.to_string()),
                 ("to", end_ms.to_string()),
+            ]),
+        Venue::GateSpot => http
+            .get("https://api.gateio.ws/api/v4/spot/candlesticks")
+            .query(&[
+                ("currency_pair", symbol.to_string()),
+                ("interval", interval.to_string()),
+                ("from", start.to_string()),
+                ("to", end.to_string()),
+            ]),
+        Venue::KucoinSpot => http
+            .get("https://api.kucoin.com/api/v1/market/candles")
+            .query(&[
+                ("type", interval.to_string()),
+                ("symbol", symbol.to_string()),
+                ("startAt", start.to_string()),
+                ("endAt", end.to_string()),
             ]),
         Venue::Hyperliquid => http.post("https://api.hyperliquid.xyz/info").json(&json!({
             "type": "candleSnapshot",
@@ -532,6 +607,61 @@ fn parse_kucoin(status: u16, body: &str) -> Result<Vec<RawCandle>, String> {
                 r.get(2),
                 r.get(3),
                 r.get(4),
+                volume(r.get(6)),
+            )
+        })
+        .collect())
+}
+
+fn secs(v: Option<&Value>) -> Option<i64> {
+    match v? {
+        Value::String(s) => s.parse::<i64>().ok(),
+        Value::Number(n) => n.as_i64(),
+        _ => None,
+    }
+}
+
+/// Gate spot candlesticks: `[t, quote volume, close, high, low, open, base volume, closed]`.
+fn parse_gate_spot(status: u16, body: &str) -> Result<Vec<RawCandle>, String> {
+    let v = json_body(status, body)?;
+    if v.get("label").and_then(Value::as_str) == Some("INVALID_CURRENCY_PAIR") {
+        return Ok(Vec::new());
+    }
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {status}: {}", short(body)));
+    }
+    Ok(rows(&v, status, body)?
+        .iter()
+        .filter_map(|r| {
+            candle(
+                secs(r.get(0)),
+                r.get(5),
+                r.get(3),
+                r.get(4),
+                r.get(2),
+                volume(r.get(1)),
+            )
+        })
+        .collect())
+}
+
+/// KuCoin spot candles: `[t, open, close, high, low, volume, turnover]`, newest first.
+fn parse_kucoin_spot(status: u16, body: &str) -> Result<Vec<RawCandle>, String> {
+    let v = json_body(status, body)?;
+    match v.get("code").and_then(Value::as_str) {
+        Some("200000") if (200..300).contains(&status) => {}
+        Some("400100") => return Ok(Vec::new()),
+        _ => return Err(format!("HTTP {status}: {}", short(body))),
+    }
+    Ok(rows(&v["data"], status, body)?
+        .iter()
+        .filter_map(|r| {
+            candle(
+                secs(r.get(0)),
+                r.get(1),
+                r.get(3),
+                r.get(4),
+                r.get(2),
                 volume(r.get(6)),
             )
         })
@@ -785,6 +915,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parses_spot_candles() {
+        let g = parse_gate_spot(
+            200,
+            r#"[["1792084740","380355.6","82603.2","82610","82560","82565.5","4.6","true"]]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            g[0],
+            RawCandle {
+                start: 1792084740,
+                open: 82565.5,
+                high: 82610.0,
+                low: 82560.0,
+                close: 82603.2,
+                volume: 380355.6
+            }
+        );
+        assert!(parse_gate_spot(
+            400,
+            r#"{"label":"INVALID_CURRENCY_PAIR","message":"Invalid currency pair NOPE_USDT"}"#
+        )
+        .unwrap()
+        .is_empty());
+        let k = parse_kucoin_spot(
+            200,
+            r#"{"code":"200000","data":[["1792085340","82380.7","82390","82400","82370","0.01","880.2"]]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (k[0].open, k[0].close, k[0].high, k[0].low, k[0].volume),
+            (82380.7, 82390.0, 82400.0, 82370.0, 880.2)
+        );
+        assert!(parse_kucoin_spot(
+            400,
+            r#"{"msg":"Unsupported trading pair.","code":"400100"}"#
+        )
+        .unwrap()
+        .is_empty());
+        assert_eq!(Venue::GateSpot.native_for(Interval::S30), Some((10, "10s")));
+    }
+
     #[tokio::test]
     #[ignore]
     async fn live_btc_on_every_venue() {
@@ -797,6 +969,10 @@ mod tests {
             ("bybit_futures", "BTCUSDT"),
             ("kucoin_futures", "XBTUSDTM"),
             ("hyperliquid", "BTC"),
+            ("binance_spot", "BTCUSDT"),
+            ("bybit_spot", "BTCUSDT"),
+            ("gate_spot", "BTC_USDT"),
+            ("kucoin_spot", "BTC-USDT"),
         ] {
             let c = fetch(&http, ex, sym, Interval::M1, now - 3600, now, 60)
                 .await

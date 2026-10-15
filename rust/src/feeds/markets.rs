@@ -181,7 +181,7 @@ pub fn hyperliquid(body: &Value) -> VenueMarkets {
 
 async fn get_json(http: &reqwest::Client, url: &str) -> Result<Value, String> {
     http.get(url)
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(90))
         .send()
         .await
         .and_then(|r| r.error_for_status())
@@ -241,7 +241,7 @@ pub async fn fetch(http: &reqwest::Client, exchange: &str) -> Result<VenueMarket
             let body = http
                 .post("https://api.hyperliquid.xyz/info")
                 .json(&json!({"type": "meta"}))
-                .timeout(Duration::from_secs(20))
+                .timeout(Duration::from_secs(90))
                 .send()
                 .await
                 .and_then(|r| r.error_for_status())

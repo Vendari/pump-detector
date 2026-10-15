@@ -23,10 +23,9 @@
 //!
 //! The main price (`PriceUpdate::price`) is the last trade, as before.
 //!
-//! Spot (Binance, Bybit, Gate, KuCoin) is a fallback for tokens with no
-//! futures market: those venues load their USDT pair lists but connect only
-//! for the symbols someone watches, and close a minute after the last one
-//! leaves. Streams: Binance `wss://stream.binance.com:9443/ws` `<sym>@miniTicker`;
+//! Spot (Binance, Bybit, Gate, KuCoin) streams every USDT pair the same way
+//! (since 2026-10-15; we build spot candles too, for spot-only tokens now
+//! and spot trading later). Spot is never used for order sizing. Streams: Binance `wss://stream.binance.com:9443/ws` `<sym>@miniTicker`;
 //! Bybit `/v5/public/spot` `tickers.<SYM>`; Gate `wss://api.gateio.ws/ws/v4/`
 //! `spot.tickers`; KuCoin spot bullet token, `/market/ticker:<BASE-USDT>`.
 
@@ -114,14 +113,6 @@ impl Venue {
         }
     }
 
-    /// Futures venues stream every market; spot connects on demand.
-    pub fn always_on(self) -> bool {
-        matches!(
-            self,
-            Venue::Bybit | Venue::Kucoin | Venue::Aster | Venue::Hyperliquid
-        )
-    }
-
     fn is_kucoin(self) -> bool {
         matches!(self, Venue::Kucoin | Venue::KucoinSpot)
     }
@@ -140,7 +131,12 @@ impl Venue {
             Venue::Kucoin => 5,
             Venue::Aster => 4,
             Venue::Hyperliquid => 2,
-            _ => 1,
+            // Spot: Binance ~510 pairs (5 messages/s, 1024 streams per
+            // connection), Bybit ~390, Gate ~2050, KuCoin ~810 (400 topics).
+            Venue::BinanceSpot => 2,
+            Venue::BybitSpot => 2,
+            Venue::GateSpot => 5,
+            Venue::KucoinSpot => 3,
         }
     }
 
@@ -421,6 +417,9 @@ impl Venue {
         match self {
             Venue::Hyperliquid => Duration::from_millis(15),
             Venue::Kucoin | Venue::KucoinSpot => Duration::from_millis(120),
+            // Binance spot accepts 5 incoming messages per second.
+            Venue::BinanceSpot => Duration::from_millis(250),
+            Venue::GateSpot => Duration::from_millis(50),
             _ => Duration::from_millis(5),
         }
     }
@@ -521,15 +520,11 @@ pub fn split(venue: Venue, listed: &VenueMarkets, watched: &BTreeSet<String>) ->
             },
         );
     };
-    if venue.always_on() {
-        for (sym, info) in listed {
-            add(sym, info.clone());
-        }
+    for (sym, info) in listed {
+        add(sym, info.clone());
     }
     for sym in watched {
-        if let Some(info) = listed.get(sym).filter(|_| !venue.always_on()) {
-            add(sym, info.clone());
-        } else if !listed.contains_key(sym) {
+        if !listed.contains_key(sym) {
             add(
                 sym,
                 MarketInfo {
@@ -918,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn spot_streams_only_watched_markets() {
+    fn spot_streams_every_listed_market() {
         let mut listed = VenueMarkets::new();
         for s in ["BTCUSDT", "ETHUSDT"] {
             listed.insert(
@@ -929,12 +924,11 @@ mod tests {
                 },
             );
         }
-        let watched: BTreeSet<String> = ["ETHUSDT".to_string()].into();
-        let all: BTreeMap<String, Sub> = split(Venue::GateSpot, &listed, &watched)
+        let all: BTreeMap<String, Sub> = split(Venue::GateSpot, &listed, &BTreeSet::new())
             .into_iter()
             .flatten()
             .collect();
-        assert_eq!(all.keys().collect::<Vec<_>>(), vec!["ETH_USDT"]);
+        assert_eq!(all.keys().collect::<Vec<_>>(), vec!["BTC_USDT", "ETH_USDT"]);
     }
 
     #[test]

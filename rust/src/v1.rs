@@ -3,8 +3,8 @@
 //! - `GET /v1/markets[?exchange=…][&symbol=…]`: listed markets per venue.
 //! - `GET /v1/prices?m=bybit_futures:BTCUSDT,…` or `?symbol=BTCUSDT`: last
 //!   and mark price with their age (up to 200 markets). Futures venues come
-//!   first; spot venues (`*_spot`, last price only) are the fallback for a
-//!   token with no futures market.
+//!   first; spot venues (`*_spot`, last price only, also with candles) are
+//!   the fallback for a token with no futures market.
 //! - `GET /v1/candles?exchange&symbol&interval=1m&limit=300[&end=<unix s>]`:
 //!   our candles, gaps filled from the exchange's history (at most once a
 //!   minute per chart), plus the open candle.
@@ -53,6 +53,8 @@ const MAX_SUBS: usize = 300;
 const MAX_PRICES: usize = 200;
 const PUSH_EVERY: Duration = Duration::from_millis(250);
 const BACKFILL_EVERY: Duration = Duration::from_secs(60);
+/// How long a chart request waits for one of the backfill slots.
+const BACKFILL_WAIT: Duration = Duration::from_secs(10);
 /// Per IP: sustained requests per second, burst, and open sockets.
 const RATE: f64 = 10.0;
 const BURST: f64 = 40.0;
@@ -328,19 +330,6 @@ async fn prices(State(app): AppState, Query(q): Query<PricesQuery>) -> Response 
         );
     }
     let only_priced = q.m.is_none();
-    // Spot is a fallback: a symbol with no futures market gets its listed
-    // spot markets streamed for two minutes, so a repeat call has prices
-    // (the stream is the way to follow one for longer).
-    if let Some(sym) = q.symbol.as_deref().map(norm) {
-        let listed = app.markets.exchanges_for(&sym);
-        if !listed.iter().any(|(ex, _)| !crate::feeds::is_spot(ex)) {
-            let spot: Vec<(String, String)> = listed
-                .iter()
-                .map(|(ex, _)| (ex.to_string(), sym.clone()))
-                .collect();
-            watch_for(&app, spot, Duration::from_secs(120));
-        }
-    }
     let now = Utc::now();
     let hub = app.hub.lock();
     let rows: Vec<Value> = wanted
@@ -359,27 +348,6 @@ async fn prices(State(app): AppState, Query(q): Query<PricesQuery>) -> Response 
         Json(json!({"prices": rows})),
     )
         .into_response()
-}
-
-/// Watch markets for a while (spot venues connect for them).
-fn watch_for(app: &Arc<App>, markets: Vec<(String, String)>, how_long: Duration) {
-    if markets.is_empty() {
-        return;
-    }
-    {
-        let mut hub = app.hub.lock();
-        for m in &markets {
-            hub.watch(m);
-        }
-    }
-    let app = app.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(how_long).await;
-        let mut hub = app.hub.lock();
-        for m in &markets {
-            hub.unwatch(m);
-        }
-    });
 }
 
 // --- /v1/candles ---
@@ -444,14 +412,13 @@ pub async fn candle_series(
     let from = interval.bucket_start(DateTime::from_timestamp(end, 0).unwrap_or_default())
         - (limit - 1) * secs;
     let thin = (bars.len() as f64) < 0.9 * limit as f64;
-    // Exchange history covers the futures venues only.
-    if allow_backfill && thin && !crate::feeds::is_spot(ex) {
+    if allow_backfill && thin {
         let key = (ex.to_string(), sym.to_string(), interval.as_str());
         let due = {
             let mut recent = app.backfilled.lock();
             let t = Instant::now();
             recent.retain(|_, at| t.duration_since(*at) < BACKFILL_EVERY);
-            match recent.entry(key) {
+            match recent.entry(key.clone()) {
                 std::collections::hash_map::Entry::Occupied(_) => false,
                 std::collections::hash_map::Entry::Vacant(v) => {
                     v.insert(t);
@@ -460,7 +427,9 @@ pub async fn candle_series(
             }
         };
         if due {
-            if let Ok(_slot) = app.backfill_slots.try_acquire() {
+            // Wait a little for a free slot rather than serving a thin chart.
+            let slot = tokio::time::timeout(BACKFILL_WAIT, app.backfill_slots.acquire()).await;
+            if let Ok(Ok(_slot)) = slot {
                 let vs = venue_symbol(app, ex, sym);
                 match backfill::fetch(&app.http, ex, &vs, interval, from, end, limit as usize).await
                 {
@@ -499,6 +468,9 @@ pub async fn candle_series(
                     Ok(_) => {}
                     Err(e) => tracing::warn!("backfill {ex} {sym} {}: {e}", interval.as_str()),
                 }
+            } else {
+                // No slot in time: let the next request for this chart try.
+                app.backfilled.lock().remove(&key);
             }
         }
     }
