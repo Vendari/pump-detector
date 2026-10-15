@@ -576,6 +576,8 @@ async fn ui_overview(State(app): AppState) -> Response {
             "trailing_positions": app.trailing.lock().len(),
             "trailing_closes": s.trailing_closes.load(Relaxed),
             "stream_clients": s.stream_clients.load(Relaxed),
+            "marks_clients": s.marks_clients.load(Relaxed),
+            "marks_pushed": s.marks_pushed.load(Relaxed),
             "exchanges": exchanges,
         })),
     )

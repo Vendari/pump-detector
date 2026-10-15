@@ -11,6 +11,7 @@ mod config;
 mod feeds;
 mod http;
 mod hub;
+mod marks;
 mod model;
 mod store;
 mod token;

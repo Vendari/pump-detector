@@ -10,6 +10,9 @@
 //!   minute per chart), plus the open candle.
 //! - `GET /v1/stream` (WebSocket): prices and live candles, pushed at most
 //!   four times a second per market, only when something changed.
+//! - `GET /v1/marks` (WebSocket, server key only): one reference price per
+//!   token for the order services, pushed when it moved past a threshold;
+//!   see marks.rs.
 //!
 //! Callers: the server API key (`x-api-key`), or a browser token from the
 //! Trigger api (`Authorization: Bearer`, or `?token=` on the WebSocket; see
@@ -207,6 +210,7 @@ pub fn router(app: Arc<App>) -> Router<Arc<App>> {
         .route("/v1/prices", get(prices))
         .route("/v1/candles", get(candles))
         .route("/v1/stream", get(stream))
+        .route("/v1/marks", get(crate::marks::handler))
         .layer(middleware::from_fn_with_state(app, guard))
         .layer(cors)
 }

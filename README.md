@@ -49,6 +49,8 @@ A dropped exchange connection is retried every 5 s. After 10 failed attempts in 
 
 ### Auth
 
+`GET /v1/marks` (WebSocket, `API_KEY` only) serves the Trigger order services one reference price per token: a snapshot on connect, then a token only when its price moved `MARKS_PUSH_THRESHOLD_PCT` (default 2 %) since the last value sent, plus a heartbeat every 5 s. The reference is the highest fresh futures price across venues whose feed is alive; when the live venues are more than 25 % apart (one ticker for two projects, or a bad print) the token gets no price, so orders fetch their own.
+
 Every endpoint except `/health` needs `API_KEY` when it is set (HTTP `x-api-key` header). In production Caddy terminates TLS for `DOMAIN` and only ports 80/443 are open (`docker compose up -d --build`).
 
 ### Web UI

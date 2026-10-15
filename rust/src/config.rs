@@ -36,6 +36,8 @@ pub struct Config {
     pub trailing_close_url: Option<String>,
     /// x-api-key for the close endpoint (defaults to WEBHOOK_API_KEY).
     pub trailing_api_key: Option<String>,
+    /// `/v1/marks` pushes a token when it moved this many % since last sent.
+    pub marks_threshold_pct: f64,
 }
 
 fn list(v: String) -> Vec<String> {
@@ -89,6 +91,10 @@ impl Config {
             })),
             trailing_close_url: var("TRAILING_CLOSE_URL"),
             trailing_api_key: var("TRAILING_API_KEY").or_else(|| webhook_api_key.clone()),
+            marks_threshold_pct: var("MARKS_PUSH_THRESHOLD_PCT")
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| *v > 0.0 && *v <= 50.0)
+                .unwrap_or(2.0),
             webhook_api_key,
         }
     }

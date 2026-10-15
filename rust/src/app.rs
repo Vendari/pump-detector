@@ -34,6 +34,9 @@ pub struct Stats {
     pub updates_per_second: AtomicU64,
     /// Open /ws/price and /v1 WebSocket clients.
     pub stream_clients: AtomicUsize,
+    /// Open /v1/marks clients and the token prices pushed to them.
+    pub marks_clients: AtomicUsize,
+    pub marks_pushed: AtomicU64,
 }
 
 impl Stats {
