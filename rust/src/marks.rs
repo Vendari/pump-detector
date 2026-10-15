@@ -12,7 +12,9 @@
 //! One price per token: token prices barely differ between exchanges, so the
 //! reference is the highest price among venues whose feed ticked in the last
 //! 30 s and whose mark (or last trade, when the venue has no mark) is at most
-//! 5 minutes old; see `reference_prices`.
+//! 5 minutes old. Tokens whose venues are more than 25 % apart are sent per
+//! exchange (`<exchange>:<token>`) instead; see `reference_prices`. Clients
+//! look up `<exchange>:<token>` first, then `<token>`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,13 +40,16 @@ const QUOTE_MAX_AGE_SECS: i64 = 300;
 /// Farther than this from the other venues is a bad print or another project.
 const OUTLIER: f64 = 0.25;
 
-/// Reference price per token (`ACUUSDT`) from every venue's quotes: the
-/// highest fresh price among the venues that are alive. When the venues are
-/// more than 25 % apart the token gets no reference at all (one ticker can
-/// name two projects, or a venue printed garbage); its orders then fetch
-/// their own price. Max, not a venue priority: when one venue pumps first (ACU on
-/// Binance, +12 % in ~100 ms) a reference below it would oversize the order
-/// there; with the max the error only ever undersizes the laggards.
+/// Reference prices keyed by token (`ACUUSDT`): the highest fresh price
+/// among the venues that are alive. Max, not a venue priority: when one venue
+/// pumps first (ACU on Binance, +12 % in ~100 ms) a reference below it would
+/// oversize the order there; with the max the error only undersizes laggards.
+///
+/// When the venues are more than 25 % apart (one ticker naming two projects,
+/// a frozen mark on a delisted contract, a garbage print, or one venue far
+/// ahead on a listing) there is no token price; each venue's own price is
+/// sent instead under `<exchange>:<token>` (`bybit_futures:PUFFERUSDT`), so
+/// every order is sized from the exchange it goes to.
 pub fn reference_prices(
     quotes: &[((String, String), Quote)],
     last_tick: &HashMap<String, DateTime<Utc>>,
@@ -55,7 +60,7 @@ pub fn reference_prices(
             .get(ex)
             .is_some_and(|t| (now - *t).num_seconds() <= FEED_ALIVE_SECS)
     };
-    let mut per_token: HashMap<&str, Vec<f64>> = HashMap::new();
+    let mut per_token: HashMap<&str, Vec<(&str, f64)>> = HashMap::new();
     for ((ex, sym), q) in quotes {
         if !crate::feeds::FUTURES.contains(&ex.as_str()) || !alive(ex) {
             continue;
@@ -66,22 +71,24 @@ pub fn reference_prices(
         if !price.is_finite() || price <= 0.0 || (now - at).num_seconds() > QUOTE_MAX_AGE_SECS {
             continue;
         }
-        per_token.entry(sym.as_str()).or_default().push(price);
+        per_token
+            .entry(sym.as_str())
+            .or_default()
+            .push((ex.as_str(), price));
     }
-    per_token
-        .into_iter()
-        .filter_map(|(sym, v)| {
-            let max = v.iter().copied().fold(f64::MIN, f64::max);
-            let min = v.iter().copied().fold(f64::MAX, f64::min);
-            // Venues more than OUTLIER apart may be two projects on one
-            // ticker (or a bad print): send nothing, so every exchange asks
-            // for its own price as before rather than size from another's.
-            if v.is_empty() || min < max * (1.0 - OUTLIER) {
-                return None;
+    let mut out = HashMap::new();
+    for (sym, v) in per_token {
+        let max = v.iter().map(|(_, p)| *p).fold(f64::MIN, f64::max);
+        let min = v.iter().map(|(_, p)| *p).fold(f64::MAX, f64::min);
+        if min < max * (1.0 - OUTLIER) {
+            for (ex, p) in v {
+                out.insert(format!("{ex}:{sym}"), p);
             }
-            Some((sym.to_string(), max))
-        })
-        .collect()
+        } else {
+            out.insert(sym.to_string(), max);
+        }
+    }
+    out
 }
 
 /// What one connection was last sent, and which tokens moved enough to send.
@@ -220,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn reference_is_the_highest_live_fresh_price_and_none_when_venues_disagree() {
+    fn reference_is_the_highest_live_fresh_price_or_per_exchange_when_venues_disagree() {
         let now = Utc::now();
         let ticks: HashMap<String, DateTime<Utc>> = [
             (
@@ -246,7 +253,7 @@ mod tests {
                 ("gate_futures".into(), "ACUUSDT".into()),
                 q(Some(0.10), None, now),
             ),
-            // Venues far apart: no reference at all.
+            // Venues far apart: each venue's own price instead.
             (
                 ("gate_futures".into(), "BADUSDT".into()),
                 q(Some(1.0), None, now),
@@ -259,7 +266,7 @@ mod tests {
                 ("kucoin_futures".into(), "BADUSDT".into()),
                 q(Some(5.0), None, now),
             ),
-            // Two venues 5x apart: no reference either.
+            // Two venues 5x apart: per exchange too.
             (
                 ("gate_futures".into(), "TWOUSDT".into()),
                 q(Some(1.0), None, now),
@@ -287,8 +294,14 @@ mod tests {
         let r = reference_prices(&quotes, &ticks, now);
         assert_eq!(r.get("ACUUSDT"), Some(&0.11));
         assert!(!r.contains_key("BADUSDT"));
+        assert_eq!(r.get("gate_futures:BADUSDT"), Some(&1.0));
+        assert_eq!(r.get("bybit_futures:BADUSDT"), Some(&1.02));
+        assert_eq!(r.get("kucoin_futures:BADUSDT"), Some(&5.0));
         assert_eq!(r.get("XUSDT"), Some(&2.0));
         assert!(!r.contains_key("TWOUSDT"));
+        assert_eq!(r.get("kucoin_futures:TWOUSDT"), Some(&5.0));
+        // Agreeing tokens get no per-exchange rows.
+        assert!(!r.contains_key("bybit_futures:ACUUSDT"));
         assert!(!r.contains_key("OLDUSDT"));
         assert!(!r.contains_key("SPOTUSDT"));
     }
