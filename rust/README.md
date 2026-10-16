@@ -14,7 +14,7 @@ Rewrite of the Python service in `app/` (2026-10-13). Same URL, routes, WebSocke
 - **/ui**: operator dashboard (feed health per exchange, every market with last/mark/spread/age, candle charts, recent alerts).
 
 ## /v1 (read-only)
-- `GET /v1/markets[?exchange=…]` listed symbols per venue; `?symbol=BTC` the venues listing it, with `priced`.
+- `GET /v1/markets[?exchange=…]` listed symbols per venue plus `volume_24h` per token (summed futures 24 h quote volume, USDT); `?symbol=BTC` the venues listing it, with `priced`.
 - `GET /v1/prices?m=bybit_futures:BTCUSDT,gate_futures:ETHUSDT` (up to 200) or `?symbol=BTCUSDT` (every venue that has it): `{exchange, symbol, price, last, mark, ts (ms), age_seconds}`.
 - `GET /v1/candles?exchange&symbol&interval=1m&limit=300[&end=<unix s>][&backfill=false]`: up to 1,000 candles `{time, open, high, low, close, volume}`, oldest first, the last one still open.
 - `GET /v1/stream` WebSocket. Send `{"op":"subscribe","channel":"prices","markets":[{"exchange":"bybit_futures","symbol":"BTCUSDT"}]}` or `{"op":"subscribe","channel":"candles","exchange":"…","symbol":"…","interval":"1m"}` (same with `unsubscribe`; `{"op":"ping"}`). Pushes `{"type":"price",…}` / `{"type":"candle",…,"candle":{…}}` at most every 250 ms per subscription and only on change. At most 300 subscriptions per socket. A browser token's socket gets `{"type":"expired"}` and is closed when the token expires; reconnect with a fresh one.
