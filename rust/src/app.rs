@@ -21,6 +21,10 @@ use crate::model::{Candle, PriceUpdate};
 use crate::store::{webhook_payload, Store};
 use crate::trailing::{CloseOrder, Trailing, WatchRequest};
 
+/// Backfill results kept in memory (about 48 KB each at 1,000 candles).
+const FETCHED_KEEP: usize = 400;
+const FETCHED_TTL: Duration = Duration::from_secs(30 * 60);
+
 /// Above the api's worst case for a close: 45 s exchange wait plus reads.
 const CLOSE_HTTP_TIMEOUT: Duration = Duration::from_secs(110);
 
@@ -80,6 +84,10 @@ pub struct App {
     /// candles, otherwise the requested `end` in 50-candle steps, so scrolling
     /// back through history asks the exchange for each older page.
     pub backfilled: Mutex<HashMap<BackfillKey, Instant>>,
+    /// What recent backfills returned, so a chart asking again within the
+    /// cooldown (switching intervals back, a refresh, a second viewer) still
+    /// gets those candles. Up to `FETCHED_KEEP` entries for `FETCHED_TTL`.
+    pub fetched: Mutex<HashMap<BackfillKey, (Instant, Vec<crate::store::Bar>)>>,
     pub backfill_slots: tokio::sync::Semaphore,
     pub limits: crate::v1::Limits,
     candle_tx: mpsc::Sender<Candle>,
@@ -117,6 +125,7 @@ impl App {
             started: Instant::now(),
             http: reqwest::Client::builder().build().expect("http client"),
             backfilled: Mutex::new(HashMap::new()),
+            fetched: Mutex::new(HashMap::new()),
             backfill_slots: tokio::sync::Semaphore::new(4),
             limits: crate::v1::Limits::default(),
             candle_tx,
@@ -131,6 +140,29 @@ impl App {
                 closes,
             },
         )
+    }
+
+    pub fn remember_fetched(&self, key: BackfillKey, bars: Vec<crate::store::Bar>) {
+        let mut f = self.fetched.lock();
+        let now = Instant::now();
+        f.retain(|_, (at, _)| now.duration_since(*at) < FETCHED_TTL);
+        if f.len() >= FETCHED_KEEP {
+            if let Some(oldest) = f
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(k, _)| k.clone())
+            {
+                f.remove(&oldest);
+            }
+        }
+        f.insert(key, (now, bars));
+    }
+
+    pub fn fetched_for(&self, key: &BackfillKey) -> Option<Vec<crate::store::Bar>> {
+        let f = self.fetched.lock();
+        f.get(key)
+            .filter(|(at, _)| at.elapsed() < FETCHED_TTL)
+            .map(|(_, bars)| bars.clone())
     }
 
     pub async fn reload_configs(&self) {

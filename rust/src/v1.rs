@@ -439,6 +439,21 @@ pub fn venue_symbol(app: &App, ex: &str, sym: &str) -> String {
 }
 
 /// Candles for a chart, oldest first, plus where they came from.
+/// Our candles plus the exchange's for the same chart. The exchange's closed
+/// candles win: ours can be partial (built from the first tick after a
+/// restart or reconnect).
+fn merge_fetched(bars: Vec<Bar>, fetched: Vec<Bar>, open_bucket: i64) -> Vec<Bar> {
+    let mut by_start: BTreeMap<i64, Bar> = bars.into_iter().map(|b| (b.start, b)).collect();
+    for b in fetched {
+        if b.start < open_bucket {
+            by_start.insert(b.start, b);
+        } else {
+            by_start.entry(b.start).or_insert(b);
+        }
+    }
+    by_start.into_values().collect()
+}
+
 /// The built interval 45m, 2h and 4h are made from.
 fn base_of(interval: Interval) -> Option<Interval> {
     match interval {
@@ -567,6 +582,7 @@ async fn built_series(
                                 volume: r.volume,
                             })
                             .collect();
+                        app.remember_fetched(key.clone(), fetched.clone());
                         let open_bucket = interval.bucket_start(Utc::now());
                         let keep_from = now - retention(interval, app.cfg.candle_retention) * secs;
                         if built {
@@ -579,19 +595,7 @@ async fn built_series(
                                 app.store.insert_missing(sym, ex, interval, &to_store).await;
                             }
                         }
-                        // The exchange's closed candles win: ours can be
-                        // partial (built from the first tick after a restart
-                        // or reconnect).
-                        let mut by_start: BTreeMap<i64, Bar> =
-                            bars.into_iter().map(|b| (b.start, b)).collect();
-                        for b in fetched {
-                            if b.start < open_bucket {
-                                by_start.insert(b.start, b);
-                            } else {
-                                by_start.entry(b.start).or_insert(b);
-                            }
-                        }
-                        bars = by_start.into_values().collect();
+                        bars = merge_fetched(bars, fetched, open_bucket);
                     }
                     Ok(_) => {}
                     Err(e) => tracing::warn!("backfill {ex} {sym} {}: {e}", interval.as_str()),
@@ -606,6 +610,27 @@ async fn built_series(
             } else {
                 // No slot in time: let the next request for this chart try.
                 app.backfilled.lock().remove(&key);
+            }
+        } else {
+            // Asked recently (maybe by this same chart a moment ago, or still
+            // in flight): serve what that fetch returned instead of nothing.
+            let deadline = Instant::now() + BACKFILL_WAIT;
+            loop {
+                if let Some(fetched) = app.fetched_for(&key) {
+                    backfilled = true;
+                    let open_bucket = interval.bucket_start(Utc::now());
+                    let fetched = fetched
+                        .into_iter()
+                        .filter(|b| b.start >= from && b.start <= end)
+                        .collect();
+                    bars = merge_fetched(bars, fetched, open_bucket);
+                    break;
+                }
+                let in_flight = app.backfill_slots.available_permits() < 4;
+                if !in_flight || Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
     }
