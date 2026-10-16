@@ -514,6 +514,7 @@ async fn built_series(
 ) -> (Vec<Bar>, bool) {
     let now = Utc::now().timestamp();
     let limit = limit.clamp(1, MAX_LIMIT);
+    let end_given = end.is_some_and(|e| e < now);
     let end = end.unwrap_or(now).min(now);
     let secs = interval.seconds();
     let built = Interval::BUILT.contains(&interval);
@@ -528,7 +529,12 @@ async fn built_series(
         - (limit - 1) * secs;
     let thin = (bars.len() as f64) < 0.9 * limit as f64;
     if allow_backfill && thin {
-        let key = (ex.to_string(), sym.to_string(), interval.as_str());
+        let page = if end_given {
+            end.div_euclid(secs * 50)
+        } else {
+            -1
+        };
+        let key = (ex.to_string(), sym.to_string(), interval.as_str(), page);
         let due = {
             let mut recent = app.backfilled.lock();
             let t = Instant::now();

@@ -24,6 +24,9 @@ use crate::trailing::{CloseOrder, Trailing, WatchRequest};
 /// Above the api's worst case for a close: 45 s exchange wait plus reads.
 const CLOSE_HTTP_TIMEOUT: Duration = Duration::from_secs(110);
 
+/// (exchange, symbol, interval, page) of a chart backfill.
+pub type BackfillKey = (String, String, &'static str, i64);
+
 #[derive(Default)]
 pub struct Stats {
     pub total_updates: AtomicU64,
@@ -73,7 +76,10 @@ pub struct App {
     pub http: reqwest::Client,
     /// Recent backfills by (exchange, symbol, interval), to ask each
     /// exchange at most once a minute for the same chart.
-    pub backfilled: Mutex<HashMap<(String, String, &'static str), Instant>>,
+    /// Keyed by (exchange, symbol, interval, page): page -1 is the latest
+    /// candles, otherwise the requested `end` in 50-candle steps, so scrolling
+    /// back through history asks the exchange for each older page.
+    pub backfilled: Mutex<HashMap<BackfillKey, Instant>>,
     pub backfill_slots: tokio::sync::Semaphore,
     pub limits: crate::v1::Limits,
     candle_tx: mpsc::Sender<Candle>,
