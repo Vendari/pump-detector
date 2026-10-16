@@ -34,6 +34,8 @@ pub fn price_json(symbol: &str, exchange: &str, l: &Latest) -> String {
 pub struct Hub {
     latest: HashMap<Market, Latest>,
     quotes: HashMap<Market, Quote>,
+    /// Rolling 24 h quote volume (USDT) per market, from the venues' tickers.
+    volumes: HashMap<Market, f64>,
     /// Receive time of each exchange's newest tick.
     last_tick: HashMap<&'static str, DateTime<Utc>>,
     subscribers: HashMap<Market, HashMap<u64, mpsc::Sender<String>>>,
@@ -56,6 +58,7 @@ impl Hub {
             Self {
                 latest: HashMap::new(),
                 quotes: HashMap::new(),
+                volumes: HashMap::new(),
                 last_tick: HashMap::new(),
                 subscribers: HashMap::new(),
                 client_watch: HashMap::new(),
@@ -86,6 +89,9 @@ impl Hub {
                 q.mark = Some((m, u.timestamp));
             }
         }
+        if let Some(v) = u.quote_volume_24h.filter(|v| v.is_finite() && *v >= 0.0) {
+            self.volumes.insert(key.clone(), v);
+        }
         if !u.primary {
             return;
         }
@@ -110,6 +116,14 @@ impl Hub {
 
     pub fn quote(&self, exchange: &str, symbol: &str) -> Option<Quote> {
         self.quotes
+            .get(&(exchange.to_string(), symbol.to_string()))
+            .copied()
+    }
+
+    /// A market's latest rolling 24 h quote volume (USDT), when its feed
+    /// sends one.
+    pub fn volume_24h(&self, exchange: &str, symbol: &str) -> Option<f64> {
+        self.volumes
             .get(&(exchange.to_string(), symbol.to_string()))
             .copied()
     }
@@ -288,6 +302,11 @@ mod tests {
         let q = hub.quote("bybit_futures", "BTCUSDT").unwrap();
         assert_eq!((q.last.unwrap().0, q.mark.unwrap().0), (5.0, 4.9));
         let listed = ["BTCUSDT".to_string(), "ETHUSDT".to_string()];
+        assert_eq!(hub.volume_24h("bybit_futures", "BTCUSDT"), None);
+        let mut v = upd(5.1);
+        v.quote_volume_24h = Some(1234.0);
+        hub.publish(&v);
+        assert_eq!(hub.volume_24h("bybit_futures", "BTCUSDT"), Some(1234.0));
         assert_eq!(hub.priced("bybit_futures", listed.iter(), 60), 1);
     }
 }

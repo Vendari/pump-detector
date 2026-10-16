@@ -1,6 +1,7 @@
 //! Read-only /v1 endpoints for the Trigger api and apps.
 //!
-//! - `GET /v1/markets[?exchange=…][&symbol=…]`: listed markets per venue.
+//! - `GET /v1/markets[?exchange=…][&symbol=…]`: listed markets per venue;
+//!   without `symbol`, also `volume_24h` per token (futures, USDT).
 //! - `GET /v1/prices?m=bybit_futures:BTCUSDT,…` or `?symbol=BTCUSDT`: last
 //!   and mark price with their age (up to 200 markets). Futures venues come
 //!   first; spot venues (`*_spot`, last price only, also with candles) are
@@ -341,7 +342,29 @@ async fn markets(State(app): AppState, Query(q): Query<MarketsQuery>) -> Respons
         .into_iter()
         .map(|ex| (ex, app.markets.venue(ex).into_keys().collect()))
         .collect();
-    Json(json!({"exchanges": out})).into_response()
+    let volumes = futures_volumes(&app.hub.lock(), &out);
+    Json(json!({"exchanges": out, "volume_24h": volumes})).into_response()
+}
+
+/// Per token, the 24 h quote volume (whole USDT) summed over the futures
+/// venues in `listed` that report one, so pickers can rank tokens. Spot
+/// volume is left out: trading is futures only.
+fn futures_volumes(
+    hub: &crate::hub::Hub,
+    listed: &BTreeMap<&str, Vec<String>>,
+) -> BTreeMap<String, u64> {
+    let mut out: BTreeMap<String, u64> = BTreeMap::new();
+    for (ex, symbols) in listed {
+        if crate::feeds::is_spot(ex) {
+            continue;
+        }
+        for sym in symbols {
+            if let Some(v) = hub.volume_24h(ex, sym) {
+                *out.entry(sym.clone()).or_default() += v.round() as u64;
+            }
+        }
+    }
+    out
 }
 
 // --- /v1/prices ---
@@ -932,6 +955,32 @@ async fn client(app: Arc<App>, socket: WebSocket, who: Caller) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn futures_volumes_sum_futures_only() {
+        let (mut hub, _rx) = crate::hub::Hub::new();
+        let mut put = |ex: &'static str, sym: &str, v: f64| {
+            let mut u = crate::model::PriceUpdate::last_trade(sym.into(), ex, 1.0, Utc::now());
+            u.quote_volume_24h = Some(v);
+            hub.publish(&u);
+        };
+        put("bybit_futures", "BTCUSDT", 100.4);
+        put("gate_futures", "BTCUSDT", 50.0);
+        put("binance_spot", "BTCUSDT", 1e9);
+        let listed: BTreeMap<&str, Vec<String>> = [
+            (
+                "bybit_futures",
+                vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()],
+            ),
+            ("gate_futures", vec!["BTCUSDT".to_string()]),
+            ("binance_spot", vec!["BTCUSDT".to_string()]),
+        ]
+        .into_iter()
+        .collect();
+        let v = futures_volumes(&hub, &listed);
+        assert_eq!(v.get("BTCUSDT"), Some(&150));
+        assert_eq!(v.get("ETHUSDT"), None);
+    }
 
     #[test]
     fn rate_limit_refills() {
