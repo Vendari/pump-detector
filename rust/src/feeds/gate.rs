@@ -78,6 +78,9 @@ pub fn parse(text: &str) -> Vec<PriceUpdate> {
                 timestamp: ts,
                 quote_volume_24h: qv,
                 volume: None,
+                // Our Gate price is the mark; its 24 h extremes are last prices.
+                high_24h: None,
+                low_24h: None,
                 last,
                 mark,
                 primary: true,

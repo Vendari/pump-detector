@@ -19,7 +19,13 @@ pub struct PriceUpdate {
     /// Rolling 24 h quote volume (USDT); candles use the deltas between ticks.
     pub quote_volume_24h: Option<f64>,
     /// Quote volume of this tick itself (a trade), added to the open candles.
+    /// None means the tick is a once-a-second ticker snapshot, not a trade.
     pub volume: Option<f64>,
+    /// Rolling 24 h high and low of the last price, from ticker feeds. A
+    /// rise (fall) since the previous tick means a trade printed there, so
+    /// candles take it as a wick the snapshots missed.
+    pub high_24h: Option<f64>,
+    pub low_24h: Option<f64>,
     pub last: Option<f64>,
     pub mark: Option<f64>,
     pub primary: bool,
@@ -40,6 +46,8 @@ impl PriceUpdate {
             timestamp,
             quote_volume_24h: None,
             volume: None,
+            high_24h: None,
+            low_24h: None,
             last: Some(price),
             mark: None,
             primary: true,
@@ -60,6 +68,8 @@ impl PriceUpdate {
             timestamp,
             quote_volume_24h: None,
             volume: None,
+            high_24h: None,
+            low_24h: None,
             last: None,
             mark: Some(mark),
             primary: false,

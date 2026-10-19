@@ -86,6 +86,9 @@ pub struct Tick {
     /// Traded size in contracts (times the lot size = base units).
     pub size: Option<f64>,
     pub quote_volume_24h: Option<f64>,
+    /// Rolling 24 h high/low of the last price (ticker feeds only).
+    pub high_24h: Option<f64>,
+    pub low_24h: Option<f64>,
 }
 
 impl Venue {
@@ -257,6 +260,8 @@ impl Venue {
                     mark: num(d.get("markPrice")),
                     size: None,
                     quote_volume_24h: num(d.get("turnover24h")),
+                    high_24h: num(d.get("highPrice24h")),
+                    low_24h: num(d.get("lowPrice24h")),
                 };
                 if t.last.is_none() && t.mark.is_none() {
                     return Vec::new();
@@ -311,6 +316,8 @@ impl Venue {
                         venue_symbol: sym.to_uppercase(),
                         last: Some(p),
                         quote_volume_24h: num(r.and_then(|r| r.get("quote_volume"))),
+                        high_24h: num(r.and_then(|r| r.get("high_24h"))),
+                        low_24h: num(r.and_then(|r| r.get("low_24h"))),
                         ..Tick::default()
                     }],
                     _ => Vec::new(),
@@ -344,6 +351,8 @@ impl Venue {
                         venue_symbol: sym.to_uppercase(),
                         last: Some(p),
                         quote_volume_24h: num(v.get("q")),
+                        high_24h: num(v.get("h")),
+                        low_24h: num(v.get("l")),
                         ..Tick::default()
                     }],
                     _ => Vec::new(),
@@ -479,6 +488,8 @@ impl Venue {
                     u.mark = t.mark;
                     u.quote_volume_24h = t.quote_volume_24h;
                     u.volume = t.size.map(|q| q * sub.multiplier * last);
+                    u.high_24h = t.high_24h;
+                    u.low_24h = t.low_24h;
                     u
                 }
                 None => match t.mark {

@@ -41,6 +41,8 @@ pub fn parse(text: &str) -> Vec<PriceUpdate> {
                     .unwrap_or_else(Utc::now),
             );
             u.quote_volume_24h = i.get("q").and_then(|q| q.as_str()?.parse().ok());
+            u.high_24h = num(i.get("h"));
+            u.low_24h = num(i.get("l"));
             Some(u)
         })
         .collect()
@@ -186,6 +188,10 @@ mod tests {
         assert_eq!(u[0].symbol, "CHIPUSDT");
         assert_eq!(u[0].price, 0.06357);
         assert_eq!(u[0].quote_volume_24h, Some(9512345.6));
+        assert_eq!(
+            (u[0].high_24h, u[0].low_24h),
+            (Some(0.07088), Some(0.06217))
+        );
         assert_eq!(u[0].timestamp.timestamp_millis(), 1791807529762);
         assert!(parse("{}").is_empty());
         assert_eq!(u[0].last, Some(0.06357));
