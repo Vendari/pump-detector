@@ -2,6 +2,8 @@
 //! wildcard subscribe). Contracts come from REST, are subscribed in batches,
 //! and are re-fetched every 15 minutes to pick up new listings. The price is
 //! the mark price (last price when mark is missing), as in the Python service.
+//! Tickers carry the funding rate; the next funding time and interval come
+//! from the contract list.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -14,7 +16,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::markets::Registry;
 use super::{num, Alive, Reconnect, Sink};
-use crate::model::PriceUpdate;
+use crate::model::{rate, unix_ms, Funding, PriceUpdate};
 
 pub const NAME: &str = "gate_futures";
 const WS_URL: &str = "wss://fx-ws.gateio.ws/v4/ws/usdt";
@@ -27,18 +29,31 @@ pub fn symbol_of(contract: &str) -> String {
     contract.replace('_', "").to_uppercase()
 }
 
-/// Names of trading, not delisting, contracts from the REST answer.
-pub fn trading_contracts(rows: &Value) -> Vec<String> {
-    let mut out: Vec<String> = rows
+/// Trading, not delisting, contracts from the REST answer, by name, with
+/// their funding (rate, next time, interval).
+pub fn trading_contracts(rows: &Value) -> Vec<(String, Option<Funding>)> {
+    let mut out: Vec<(String, Option<Funding>)> = rows
         .as_array()
         .into_iter()
         .flatten()
         .filter(|r| r.get("in_delisting").and_then(Value::as_bool) != Some(true))
         .filter(|r| r.get("status").and_then(Value::as_str) == Some("trading"))
-        .filter_map(|r| r.get("name")?.as_str().map(str::to_string))
+        .filter_map(|r| {
+            let name = r.get("name")?.as_str()?.to_string();
+            let f = Funding {
+                rate: rate(r.get("funding_rate")),
+                next_ms: unix_ms(r.get("funding_next_apply")),
+                interval_hours: r
+                    .get("funding_interval")
+                    .and_then(Value::as_f64)
+                    .filter(|s| *s > 0.0)
+                    .map(|s| s / 3600.0),
+            };
+            Some((name, (!f.is_empty()).then_some(f)))
+        })
         .collect();
-    out.sort();
-    out.dedup();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.dedup_by(|a, b| a.0 == b.0);
     out
 }
 
@@ -71,6 +86,10 @@ pub fn parse(text: &str) -> Vec<PriceUpdate> {
             let last = num(item.get("last"));
             let price = mark.or(last)?;
             let qv = num(item.get("volume_24h_quote")).or_else(|| num(item.get("volume_24h")));
+            let funding = rate(item.get("funding_rate")).map(|r| Funding {
+                rate: Some(r),
+                ..Funding::default()
+            });
             Some(PriceUpdate {
                 symbol: symbol_of(contract),
                 exchange: NAME,
@@ -84,20 +103,22 @@ pub fn parse(text: &str) -> Vec<PriceUpdate> {
                 last,
                 mark,
                 primary: true,
+                funding,
             })
         })
         .collect()
 }
 
-fn listed(contracts: &[String]) -> super::markets::VenueMarkets {
+fn listed(contracts: &[(String, Option<Funding>)]) -> super::markets::VenueMarkets {
     contracts
         .iter()
-        .map(|c| {
+        .map(|(c, funding)| {
             (
                 symbol_of(c),
                 super::markets::MarketInfo {
                     venue_symbol: c.clone(),
                     multiplier: 1.0,
+                    funding: *funding,
                 },
             )
         })
@@ -114,7 +135,7 @@ fn subscribe_msg(batch: &[String]) -> String {
     .to_string()
 }
 
-async fn fetch_contracts(http: &reqwest::Client) -> Result<Vec<String>, String> {
+async fn fetch_contracts(http: &reqwest::Client) -> Result<Vec<(String, Option<Funding>)>, String> {
     let rows: Value = http
         .get(REST_CONTRACTS)
         .send()
@@ -151,7 +172,7 @@ async fn session(sink: &Sink, alive: &Alive, http: &reqwest::Client, registry: &
     let contracts = match fetch_contracts(http).await {
         Ok(c) if !c.is_empty() => {
             registry.set(NAME, listed(&c));
-            c
+            c.into_iter().map(|(name, _)| name).collect()
         }
         other => {
             match other {
@@ -244,7 +265,7 @@ async fn session(sink: &Sink, alive: &Alive, http: &reqwest::Client, registry: &
                         if !contracts.is_empty() {
                             registry.set(NAME, listed(&contracts));
                         }
-                        let new: Vec<String> = contracts.into_iter().filter(|c| !subscribed.contains(c)).collect();
+                        let new: Vec<String> = contracts.into_iter().map(|(c, _)| c).filter(|c| !subscribed.contains(c)).collect();
                         if !new.is_empty() {
                             tracing::info!("Gate futures: subscribing to {} new contract(s): {:?}", new.len(), &new[..new.len().min(5)]);
                             for batch in new.chunks(BATCH) {
@@ -275,7 +296,7 @@ mod tests {
     fn parses_tickers_mark_first() {
         let u = parse(
             r#"{"time":1,"time_ms":1791807529762,"channel":"futures.tickers","event":"update","result":[
-                {"contract":"BTC_USDT","last":"100","mark_price":"101","volume_24h_quote":"5000"},
+                {"contract":"BTC_USDT","last":"100","mark_price":"101","volume_24h_quote":"5000","funding_rate":"0.0001"},
                 {"contract":"ETH_USDT","last":"10","mark_price":""},
                 {"contract":"BAD_USDT","last":"0"}]}"#,
         );
@@ -287,6 +308,8 @@ mod tests {
         assert_eq!((u[1].symbol.as_str(), u[1].price), ("ETHUSDT", 10.0));
         assert_eq!((u[0].last, u[0].mark), (Some(100.0), Some(101.0)));
         assert_eq!(u[1].mark, None);
+        assert_eq!(u[0].funding.unwrap().rate, Some(0.0001));
+        assert!(u[1].funding.is_none());
         assert!(parse(
             r#"{"channel":"futures.tickers","event":"subscribe","result":{"status":"success"}}"#
         )
@@ -300,6 +323,16 @@ mod tests {
                 {"name":"C_USDT","status":"trading","in_delisting":true},{"name":"D_USDT","status":"delisted"}]"#,
         )
         .unwrap();
-        assert_eq!(trading_contracts(&rows), vec!["A_USDT", "B_USDT"]);
+        let names: Vec<String> = trading_contracts(&rows).into_iter().map(|c| c.0).collect();
+        assert_eq!(names, vec!["A_USDT", "B_USDT"]);
+        let rows: Value = serde_json::from_str(
+            r#"[{"name":"A_USDT","status":"trading","funding_rate":"-0.000412","funding_next_apply":1791820800,"funding_interval":14400}]"#,
+        )
+        .unwrap();
+        let f = trading_contracts(&rows)[0].1.unwrap();
+        assert_eq!(
+            (f.rate, f.next_ms, f.interval_hours),
+            (Some(-0.000412), Some(1791820800000), Some(4.0))
+        );
     }
 }

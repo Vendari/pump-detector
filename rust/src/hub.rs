@@ -10,7 +10,7 @@ use serde_json::json;
 use tokio::sync::{mpsc, watch};
 
 use crate::feeds::venues::{usdt, Venue};
-use crate::model::{iso_naive, PriceUpdate};
+use crate::model::{iso_naive, Funding, PriceUpdate};
 
 pub type Market = (String, String); // (exchange, symbol)
 
@@ -20,11 +20,13 @@ pub struct Latest {
     pub timestamp: DateTime<Utc>,
 }
 
-/// Last and mark price of a market, each with the time it arrived.
+/// Last and mark price of a market, each with the time it arrived, and its
+/// funding as the streams last reported it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Quote {
     pub last: Option<(f64, DateTime<Utc>)>,
     pub mark: Option<(f64, DateTime<Utc>)>,
+    pub funding: Funding,
 }
 
 pub fn price_json(symbol: &str, exchange: &str, l: &Latest) -> String {
@@ -88,6 +90,13 @@ impl Hub {
             if let Some(m) = u.mark {
                 q.mark = Some((m, u.timestamp));
             }
+        }
+        if let Some(f) = u.funding.filter(|f| !f.is_empty()) {
+            self.quotes
+                .entry(key.clone())
+                .or_default()
+                .funding
+                .merge(&f);
         }
         if let Some(v) = u.quote_volume_24h.filter(|v| v.is_finite() && *v >= 0.0) {
             self.volumes.insert(key.clone(), v);
@@ -308,5 +317,38 @@ mod tests {
         hub.publish(&v);
         assert_eq!(hub.volume_24h("bybit_futures", "BTCUSDT"), Some(1234.0));
         assert_eq!(hub.priced("bybit_futures", listed.iter(), 60), 1);
+    }
+
+    #[test]
+    fn funding_merges_into_the_quote() {
+        let (mut hub, _rx) = Hub::new();
+        hub.publish(&upd(5.0));
+        let f = Funding {
+            rate: Some(0.0001),
+            next_ms: Some(1_000),
+            interval_hours: None,
+        };
+        hub.publish(&PriceUpdate::funding_only(
+            "BTCUSDT".into(),
+            "bybit_futures",
+            f,
+            Utc::now(),
+        ));
+        hub.publish(&PriceUpdate::funding_only(
+            "BTCUSDT".into(),
+            "bybit_futures",
+            Funding {
+                rate: Some(-0.0003),
+                ..Funding::default()
+            },
+            Utc::now(),
+        ));
+        let q = hub.quote("bybit_futures", "BTCUSDT").unwrap();
+        assert_eq!(
+            (q.funding.rate, q.funding.next_ms),
+            (Some(-0.0003), Some(1_000))
+        );
+        assert_eq!(hub.latest("bybit_futures", "BTCUSDT").unwrap().price, 5.0);
+        assert_eq!(q.last.unwrap().0, 5.0);
     }
 }

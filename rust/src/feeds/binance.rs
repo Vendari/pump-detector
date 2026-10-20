@@ -3,7 +3,8 @@
 //! Market streams moved to `/market/ws` (checked 2026-10-12).
 //!
 //! Mark prices of every market come from the all-market `!markPrice@arr@1s`
-//! stream, which Aster (a Binance-style venue) offers too.
+//! stream, which Aster (a Binance-style venue) offers too. Its frames also
+//! carry each market's funding rate (`r`) and next funding time (`T`).
 
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ use serde_json::Value;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::{num, Alive, Reconnect, Sink};
-use crate::model::PriceUpdate;
+use crate::model::{rate, unix_ms, Funding, PriceUpdate};
 
 pub const NAME: &str = "binance_futures";
 const URL: &str = "wss://fstream.binance.com/market/ws/!miniTicker@arr";
@@ -60,14 +61,21 @@ pub fn parse_marks(text: &str, exchange: &'static str) -> Vec<PriceUpdate> {
             let symbol = i.get("s")?.as_str()?.to_uppercase();
             let mark = num(i.get("p"))?;
             let ms = i.get("E").and_then(Value::as_i64).unwrap_or(0);
-            Some(PriceUpdate::mark_only(
+            let mut u = PriceUpdate::mark_only(
                 symbol,
                 exchange,
                 mark,
                 Utc.timestamp_millis_opt(ms)
                     .single()
                     .unwrap_or_else(Utc::now),
-            ))
+            );
+            let f = Funding {
+                rate: rate(i.get("r")),
+                next_ms: unix_ms(i.get("T")),
+                interval_hours: None,
+            };
+            u.funding = (!f.is_empty()).then_some(f);
+            Some(u)
         })
         .collect()
 }
@@ -201,7 +209,7 @@ mod tests {
     #[test]
     fn parses_mark_prices() {
         let u = parse_marks(
-            r#"[{"e":"markPriceUpdate","E":1791807529000,"s":"BTCUSDT","p":"64000.10","i":"64001"},{"e":"markPriceUpdate","s":"Z","p":"0"}]"#,
+            r#"[{"e":"markPriceUpdate","E":1791807529000,"s":"BTCUSDT","p":"64000.10","i":"64001","r":"-0.00030000","T":1791820800000},{"e":"markPriceUpdate","s":"Z","p":"0"}]"#,
             "aster_futures",
         );
         assert_eq!(u.len(), 1);
@@ -209,5 +217,7 @@ mod tests {
             (u[0].exchange, u[0].mark, u[0].primary),
             ("aster_futures", Some(64000.1), false)
         );
+        let f = u[0].funding.unwrap();
+        assert_eq!((f.rate, f.next_ms), (Some(-0.0003), Some(1791820800000)));
     }
 }

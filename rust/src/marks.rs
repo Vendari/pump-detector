@@ -223,6 +223,7 @@ mod tests {
         Quote {
             last: last.map(|p| (p, at)),
             mark: mark.map(|p| (p, at)),
+            ..Quote::default()
         }
     }
 

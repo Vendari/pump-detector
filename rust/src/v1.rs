@@ -3,7 +3,10 @@
 //! - `GET /v1/markets[?exchange=…][&symbol=…]`: listed markets per venue;
 //!   without `symbol`, also `volume_24h` per token (futures, USDT).
 //! - `GET /v1/prices?m=bybit_futures:BTCUSDT,…` or `?symbol=BTCUSDT`: last
-//!   and mark price with their age (up to 200 markets). Futures venues come
+//!   and mark price with their age (up to 200 markets); futures rows also
+//!   carry `funding_rate` (fraction per period), `next_funding_ts` (unix ms)
+//!   and `funding_interval_hours`, each null when unknown. The stream's
+//!   price messages carry the same fields. Futures venues come
 //!   first; spot venues (`*_spot`, last price only, also with candles) are
 //!   the fallback for a token with no futures market.
 //! - `GET /v1/candles?exchange&symbol&interval=1m&limit=300[&end=<unix s>]`:
@@ -45,7 +48,7 @@ use crate::backfill;
 use crate::feeds::venues::{usdt, Venue};
 use crate::feeds::EXCHANGES;
 use crate::hub::{Latest, Quote};
-use crate::model::Interval;
+use crate::model::{Funding, Interval};
 use crate::store::{retention, Bar};
 use crate::token;
 
@@ -277,12 +280,22 @@ fn ms(t: DateTime<Utc>) -> i64 {
 /// market keeps its last tick forever otherwise).
 const STALE_AFTER_SECS: i64 = 600;
 
-pub fn price_value(ex: &str, sym: &str, l: Option<Latest>, q: Quote, now: DateTime<Utc>) -> Value {
+/// `listed` is the funding the venue's contract list gave (schedule, and
+/// the rate where the stream has none yet).
+pub fn price_value(
+    ex: &str,
+    sym: &str,
+    l: Option<Latest>,
+    q: Quote,
+    listed: Option<Funding>,
+    now: DateTime<Utc>,
+) -> Value {
     let fresh = |t: DateTime<Utc>| (now - t).num_seconds() <= STALE_AFTER_SECS;
     let l = l.filter(|l| fresh(l.timestamp));
     let q = Quote {
         last: q.last.filter(|x| fresh(x.1)),
         mark: q.mark.filter(|x| fresh(x.1)),
+        funding: q.funding,
     };
     let newest = [
         l.map(|l| l.timestamp),
@@ -292,6 +305,12 @@ pub fn price_value(ex: &str, sym: &str, l: Option<Latest>, q: Quote, now: DateTi
     .into_iter()
     .flatten()
     .max();
+    // Funding only for a market that is trading (a fresh price).
+    let funding = if !crate::feeds::is_spot(ex) && newest.is_some() {
+        q.funding.or(listed)
+    } else {
+        Funding::default()
+    };
     json!({
         "exchange": ex,
         "symbol": sym,
@@ -301,6 +320,9 @@ pub fn price_value(ex: &str, sym: &str, l: Option<Latest>, q: Quote, now: DateTi
         "mark": q.mark.map(|x| x.0),
         "ts": newest.map(ms),
         "age_seconds": newest.map(|t| ((now - t).num_milliseconds().max(0) as f64 / 100.0).round() / 10.0),
+        "funding_rate": funding.rate,
+        "next_funding_ts": funding.next_after(ms(now)),
+        "funding_interval_hours": funding.interval_hours,
     })
 }
 
@@ -414,7 +436,15 @@ async fn prices(State(app): AppState, Query(q): Query<PricesQuery>) -> Response 
             if only_priced && l.is_none() && quote.is_none() {
                 return None;
             }
-            Some(price_value(ex, sym, l, quote.unwrap_or_default(), now))
+            let listed = app.markets.get(ex, sym).and_then(|i| i.funding);
+            Some(price_value(
+                ex,
+                sym,
+                l,
+                quote.unwrap_or_default(),
+                listed,
+                now,
+            ))
         })
         .collect();
     (
@@ -915,7 +945,8 @@ async fn client(app: Arc<App>, socket: WebSocket, who: Caller) {
                             Sub::Price(ex, sym) => {
                                 let l = hub.latest(ex, sym);
                                 let Some(q) = hub.quote(ex, sym) else { continue };
-                                let mut v = price_value(ex, sym, l, q, now);
+                                let listed = app.markets.get(ex, sym).and_then(|i| i.funding);
+                                let mut v = price_value(ex, sym, l, q, listed, now);
                                 v["type"] = json!("price");
                                 if let Some(o) = v.as_object_mut() {
                                     o.remove("age_seconds");
@@ -1089,8 +1120,9 @@ mod tests {
         let q = Quote {
             last: Some((2.0, old)),
             mark: Some((1.9, now)),
+            ..Quote::default()
         };
-        let v = price_value("bybit_futures", "XUSDT", None, q, now);
+        let v = price_value("bybit_futures", "XUSDT", None, q, None, now);
         assert_eq!(v["last"], Value::Null);
         assert_eq!(v["mark"], json!(1.9));
     }
@@ -1101,11 +1133,47 @@ mod tests {
         let q = Quote {
             last: Some((2.0, now)),
             mark: Some((1.9, now - chrono::Duration::seconds(1))),
+            ..Quote::default()
         };
-        let v = price_value("bybit_futures", "XUSDT", None, q, now);
+        let v = price_value("bybit_futures", "XUSDT", None, q, None, now);
         assert_eq!(v["last"], json!(2.0));
         assert_eq!(v["mark"], json!(1.9));
         assert_eq!(v["price"], Value::Null);
         assert_eq!(v["ts"], json!(now.timestamp_millis()));
+        assert_eq!(v["funding_rate"], Value::Null);
+        assert_eq!(v["next_funding_ts"], Value::Null);
+    }
+
+    #[test]
+    fn funding_fields() {
+        let now = Utc::now();
+        let h = 3_600_000;
+        let q = Quote {
+            mark: Some((1.9, now)),
+            funding: Funding {
+                rate: Some(-0.0004),
+                ..Funding::default()
+            },
+            ..Quote::default()
+        };
+        // Stream rate, contract-list schedule.
+        let listed = Funding {
+            rate: Some(0.1),
+            next_ms: Some(ms(now) - 1),
+            interval_hours: Some(8.0),
+        };
+        let v = price_value("gate_futures", "XUSDT", None, q, Some(listed), now);
+        assert_eq!(v["funding_rate"], json!(-0.0004));
+        assert_eq!(v["next_funding_ts"], json!(ms(now) - 1 + 8 * h));
+        assert_eq!(v["funding_interval_hours"], json!(8.0));
+        // Spot, or no fresh price: no funding.
+        let v = price_value("gate_spot", "XUSDT", None, q, Some(listed), now);
+        assert_eq!(v["funding_rate"], Value::Null);
+        let stale = Quote {
+            mark: Some((1.9, now - chrono::Duration::seconds(STALE_AFTER_SECS + 5))),
+            ..q
+        };
+        let v = price_value("gate_futures", "XUSDT", None, stale, Some(listed), now);
+        assert_eq!(v["funding_rate"], Value::Null);
     }
 }

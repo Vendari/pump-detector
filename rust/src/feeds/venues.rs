@@ -40,7 +40,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::markets::{self, MarketInfo, Registry, VenueMarkets};
 use super::{num, Alive, Reconnect, Sink};
-use crate::model::PriceUpdate;
+use crate::model::{rate, unix_ms, Funding, PriceUpdate};
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const APP_PING_EVERY: Duration = Duration::from_secs(15);
@@ -89,6 +89,16 @@ pub struct Tick {
     /// Rolling 24 h high/low of the last price (ticker feeds only).
     pub high_24h: Option<f64>,
     pub low_24h: Option<f64>,
+    pub funding: Option<Funding>,
+}
+
+fn funding(rate: Option<f64>, next_ms: Option<i64>) -> Option<Funding> {
+    let f = Funding {
+        rate,
+        next_ms,
+        interval_hours: None,
+    };
+    (!f.is_empty()).then_some(f)
 }
 
 impl Venue {
@@ -262,8 +272,12 @@ impl Venue {
                     quote_volume_24h: num(d.get("turnover24h")),
                     high_24h: num(d.get("highPrice24h")),
                     low_24h: num(d.get("lowPrice24h")),
+                    funding: funding(
+                        rate(d.get("fundingRate")),
+                        unix_ms(d.get("nextFundingTime")),
+                    ),
                 };
-                if t.last.is_none() && t.mark.is_none() {
+                if t.last.is_none() && t.mark.is_none() && t.funding.is_none() {
                     return Vec::new();
                 }
                 vec![t]
@@ -294,6 +308,22 @@ impl Venue {
                         (Some(sym), Some(m)) => vec![Tick {
                             venue_symbol: sym,
                             mark: Some(m),
+                            ..Tick::default()
+                        }],
+                        _ => Vec::new(),
+                    }
+                }
+                // Same topic, about once a minute: the predicted rate.
+                Some("funding.rate") => {
+                    let sym = v
+                        .get("topic")
+                        .and_then(Value::as_str)
+                        .and_then(|t| t.rsplit_once(':'))
+                        .map(|(_, s)| s.to_uppercase());
+                    match (sym, rate(v.pointer("/data/fundingRate"))) {
+                        (Some(sym), Some(r)) => vec![Tick {
+                            venue_symbol: sym,
+                            funding: funding(Some(r), None),
                             ..Tick::default()
                         }],
                         _ => Vec::new(),
@@ -395,6 +425,8 @@ impl Venue {
                         (Some(coin), Some(m)) => vec![Tick {
                             venue_symbol: coin,
                             mark: Some(m),
+                            // Hourly rate; paid on the hour.
+                            funding: funding(rate(v.pointer("/data/ctx/funding")), None),
                             ..Tick::default()
                         }],
                         _ => Vec::new(),
@@ -492,11 +524,16 @@ impl Venue {
                     u.low_24h = t.low_24h;
                     u
                 }
-                None => match t.mark {
-                    Some(m) => PriceUpdate::mark_only(sub.symbol.clone(), self.name(), m, now),
-                    None => continue,
+                None => match (t.mark, t.funding) {
+                    (Some(m), _) => PriceUpdate::mark_only(sub.symbol.clone(), self.name(), m, now),
+                    (None, Some(f)) => {
+                        PriceUpdate::funding_only(sub.symbol.clone(), self.name(), f, now)
+                    }
+                    (None, None) => continue,
                 },
             };
+            let mut u = u;
+            u.funding = t.funding;
             out.push(u);
         }
         out
@@ -541,6 +578,7 @@ pub fn split(venue: Venue, listed: &VenueMarkets, watched: &BTreeSet<String>) ->
                 MarketInfo {
                     venue_symbol: venue.venue_symbol(sym),
                     multiplier: 1.0,
+                    funding: None,
                 },
             );
         }
@@ -824,6 +862,15 @@ mod tests {
         assert!(Venue::Bybit
             .parse(r#"{"topic":"tickers.BTCUSDT","data":{"symbol":"BTCUSDT"}}"#)
             .is_empty());
+        let b = Venue::Bybit.parse(
+            r#"{"topic":"tickers.BTCUSDT","data":{"symbol":"BTCUSDT","fundingRate":"-0.0005","nextFundingTime":"1791820800000"}}"#,
+        );
+        let f = b[0].funding.unwrap();
+        assert_eq!((f.rate, f.next_ms), (Some(-0.0005), Some(1791820800000)));
+        let k = Venue::Kucoin.parse(
+            r#"{"topic":"/contract/instrument:XBTUSDTM","subject":"funding.rate","data":{"granularity":60000,"fundingRate":0.0001,"timestamp":1}}"#,
+        );
+        assert_eq!(k[0].funding.unwrap().rate, Some(0.0001));
 
         let k = Venue::Kucoin
             .parse(r#"{"subject":"match","data":{"symbol":"XBTUSDTM","price":"100.5","size":3}}"#);
@@ -851,9 +898,10 @@ mod tests {
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].venue_symbol, "kPEPE");
         let h = Venue::Hyperliquid.parse(
-            r#"{"channel":"activeAssetCtx","data":{"coin":"BTC","ctx":{"markPx":"64000.5","midPx":"64001"}}}"#,
+            r#"{"channel":"activeAssetCtx","data":{"coin":"BTC","ctx":{"markPx":"64000.5","midPx":"64001","funding":"0.0000125"}}}"#,
         );
         assert_eq!(h[0].mark, Some(64000.5));
+        assert_eq!(h[0].funding.unwrap().rate, Some(0.0000125));
     }
 
     #[test]
@@ -893,6 +941,18 @@ mod tests {
         assert!((u[0].volume.unwrap() - 0.5).abs() < 1e-9);
         assert!(!u[1].primary);
         assert_eq!(u[1].mark, Some(99.0));
+
+        let f = Venue::Kucoin.updates(
+            vec![Tick {
+                venue_symbol: "XBTUSDTM".into(),
+                funding: funding(Some(0.0002), None),
+                ..Tick::default()
+            }],
+            &subs,
+        );
+        assert_eq!(f.len(), 1);
+        assert!(!f[0].primary && f[0].mark.is_none() && f[0].last.is_none());
+        assert_eq!(f[0].funding.unwrap().rate, Some(0.0002));
     }
 
     #[test]
@@ -932,6 +992,7 @@ mod tests {
                 MarketInfo {
                     venue_symbol: format!("{}_USDT", &s[..3]),
                     multiplier: 1.0,
+                    funding: None,
                 },
             );
         }
@@ -955,6 +1016,7 @@ mod tests {
                         s[..s.len() - 4].into()
                     },
                     multiplier: 1.0,
+                    funding: None,
                 },
             );
         }
