@@ -1,7 +1,9 @@
 //! Gate USDT perpetual futures: `futures.tickers` per contract (there is no
 //! wildcard subscribe). Contracts come from REST, are subscribed in batches,
 //! and are re-fetched every 15 minutes to pick up new listings. The price is
-//! the mark price (last price when mark is missing), as in the Python service.
+//! the last trade price (mark when last is missing), like every other venue:
+//! Gate's mark trails trades by seconds on a fast move, so mark-built candles
+//! put a listing pump a minute late (AT, 2026-10-21).
 //! Tickers carry the funding rate; the next funding time and interval come
 //! from the contract list.
 
@@ -84,7 +86,7 @@ pub fn parse(text: &str) -> Vec<PriceUpdate> {
             let contract = item.get("contract")?.as_str()?;
             let mark = num(item.get("mark_price"));
             let last = num(item.get("last"));
-            let price = mark.or(last)?;
+            let price = last.or(mark)?;
             let qv = num(item.get("volume_24h_quote")).or_else(|| num(item.get("volume_24h")));
             let funding = rate(item.get("funding_rate")).map(|r| Funding {
                 rate: Some(r),
@@ -97,9 +99,8 @@ pub fn parse(text: &str) -> Vec<PriceUpdate> {
                 timestamp: ts,
                 quote_volume_24h: qv,
                 volume: None,
-                // Our Gate price is the mark; its 24 h extremes are last prices.
-                high_24h: None,
-                low_24h: None,
+                high_24h: num(item.get("high_24h")),
+                low_24h: num(item.get("low_24h")),
                 last,
                 mark,
                 primary: true,
@@ -293,18 +294,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_tickers_mark_first() {
+    fn parses_tickers_last_first() {
         let u = parse(
             r#"{"time":1,"time_ms":1791807529762,"channel":"futures.tickers","event":"update","result":[
-                {"contract":"BTC_USDT","last":"100","mark_price":"101","volume_24h_quote":"5000","funding_rate":"0.0001"},
+                {"contract":"BTC_USDT","last":"100","mark_price":"101","volume_24h_quote":"5000","funding_rate":"0.0001","high_24h":"110","low_24h":"90"},
                 {"contract":"ETH_USDT","last":"10","mark_price":""},
-                {"contract":"BAD_USDT","last":"0"}]}"#,
+                {"contract":"BAD_USDT","last":"0"},
+                {"contract":"NEW_USDT","last":"","mark_price":"2"}]}"#,
         );
-        assert_eq!(u.len(), 2);
+        assert_eq!(u.len(), 3);
+        assert_eq!((u[2].symbol.as_str(), u[2].price), ("NEWUSDT", 2.0));
         assert_eq!(
             (u[0].symbol.as_str(), u[0].price, u[0].quote_volume_24h),
-            ("BTCUSDT", 101.0, Some(5000.0))
+            ("BTCUSDT", 100.0, Some(5000.0))
         );
+        assert_eq!((u[0].high_24h, u[0].low_24h), (Some(110.0), Some(90.0)));
         assert_eq!((u[1].symbol.as_str(), u[1].price), ("ETHUSDT", 10.0));
         assert_eq!((u[0].last, u[0].mark), (Some(100.0), Some(101.0)));
         assert_eq!(u[1].mark, None);
