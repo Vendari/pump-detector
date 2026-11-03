@@ -1,15 +1,26 @@
 # Production layout for the Hetzner box: only Caddy is reachable from the
 # internet (80/443, automatic TLS for $DOMAIN); the app and Mongo stay on the
 # internal network. Set DOMAIN and API_KEY in .env (see .env.example).
+# Cap container logs so they don't grow without bound.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   mongodb:
     image: mongo:7
     container_name: crypto_pump_detector_mongodb
+    # The box has 7.7 GB and no swap. Mongo's default cache (half of RAM minus
+    # 1 GB, ~3.4 GB) let the kernel OOM-kill mongod during alert bursts.
+    command: ["--wiredTigerCacheSizeGB", "2"]
     volumes:
       - mongodb_data:/data/db
     environment:
       - MONGO_INITDB_DATABASE=crypto_pump_detector
     restart: unless-stopped
+    logging: *default-logging
 
   app:
     # Rust service (rust/README.md) since 2026-10-13; the Python app in app/
@@ -22,6 +33,7 @@ services:
     depends_on:
       - mongodb
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - .env
 
@@ -39,6 +51,7 @@ services:
     depends_on:
       - app
     restart: unless-stopped
+    logging: *default-logging
 
 volumes:
   mongodb_data:
