@@ -27,6 +27,8 @@ const FETCHED_TTL: Duration = Duration::from_secs(30 * 60);
 
 /// Above the api's worst case for a close: 45 s exchange wait plus reads.
 const CLOSE_HTTP_TIMEOUT: Duration = Duration::from_secs(110);
+/// Detected alerts stored at once (see `App::store_slots`).
+const STORE_CONCURRENCY: usize = 4;
 
 /// (exchange, symbol, interval, page) of a chart backfill.
 pub type BackfillKey = (String, String, &'static str, i64);
@@ -89,6 +91,11 @@ pub struct App {
     /// gets those candles. Up to `FETCHED_KEEP` entries for `FETCHED_TTL`.
     pub fetched: Mutex<HashMap<BackfillKey, (Instant, Vec<crate::store::Bar>)>>,
     pub backfill_slots: tokio::sync::Semaphore,
+    /// Detected alerts being stored. Each one reads a snapshot of up to
+    /// 1,600 candles, and a 12h/1D close fires hundreds of alerts at once:
+    /// unbounded, that took the process past 1.4 GB and the box's OOM killer
+    /// ended it at 00:00 UTC.
+    pub store_slots: tokio::sync::Semaphore,
     pub limits: crate::v1::Limits,
     candle_tx: mpsc::Sender<Candle>,
     alert_tx: mpsc::Sender<PriceAlert>,
@@ -127,6 +134,7 @@ impl App {
             backfilled: Mutex::new(HashMap::new()),
             fetched: Mutex::new(HashMap::new()),
             backfill_slots: tokio::sync::Semaphore::new(4),
+            store_slots: tokio::sync::Semaphore::new(STORE_CONCURRENCY),
             limits: crate::v1::Limits::default(),
             candle_tx,
             alert_tx,
@@ -304,8 +312,13 @@ impl App {
                     }
                 });
             }
-            let store = self.store.clone();
-            tokio::spawn(async move { store.store_detected(&a).await });
+            let app = self.clone();
+            tokio::spawn(async move {
+                let Ok(_slot) = app.store_slots.acquire().await else {
+                    return;
+                };
+                app.store.store_detected(&a).await
+            });
         }
     }
 
